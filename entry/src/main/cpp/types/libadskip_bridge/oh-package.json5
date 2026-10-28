@@ -1,0 +1,6 @@
+{
+  "name": "libadskip_bridge.so",
+  "types": "./index.d.ts",
+  "version": "1.0.0",
+  "description": "Native bridge for AdSkip daemon"
+}

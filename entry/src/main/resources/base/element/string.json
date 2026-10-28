@@ -1,0 +1,24 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "本地VPN开屏广告DNS拦截器"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "本地VPN广告拦截控制台"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "AdSkipVpn"
+    },
+    {
+      "name": "AdSkipAccessibility_label",
+      "value": "AdSkipVpn 开屏广告自动跳过"
+    },
+    {
+      "name": "AdSkipAccessibility_desc",
+      "value": "仅在应用启动前5秒自动识别并点击开屏广告跳过按钮，平时休眠不耗电"
+    }
+  ]
+}

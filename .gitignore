@@ -1,0 +1,18 @@
+# DevEco Studio / HarmonyOS build & IDE files
+.hvigor/
+.idea/
+.cxx/
+build/
+entry/build/
+entry/.cxx/
+oh_modules/
+entry/oh_modules/
+entry/src/main/ets/generated/
+phoneSettingConfig_*.json
+local.properties
+*.hap
+*.har
+*.hsp
+*.log
+*.out
+.DS_Store
