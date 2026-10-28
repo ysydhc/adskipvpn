@@ -119,7 +119,19 @@ struct Index {
       if (action === '/enable') {
         adskipBridge.setDaemonEnabled(true);
         this.daemonEnabled = true;
-        this.appendSkipLog('[SKIP-SVC] ✅ 已开启开屏广告自动跳过服务');
+        this.appendSkipLog('[SKIP-SVC] ✅ 已开启并重置开屏广告自动跳过服务');
+        setTimeout(() => {
+          this.syncLocalSkipDaemon('/status');
+          this.reloadSkipLogs();
+        }, 600);
+      } else if (action === '/restart') {
+        adskipBridge.setDaemonEnabled(true);
+        this.daemonEnabled = true;
+        this.appendSkipLog('[SKIP-SVC] 🔄 正在重置并重启后台自动跳过引擎...');
+        setTimeout(() => {
+          this.syncLocalSkipDaemon('/status');
+          this.reloadSkipLogs();
+        }, 600);
       } else if (action === '/disable') {
         adskipBridge.setDaemonEnabled(false);
         this.daemonEnabled = false;
@@ -505,27 +517,42 @@ struct Index {
       .backgroundColor('#F1F3F5')
       .borderRadius(10)
 
-      // 核心开关卡片（同时支持 Switch 开关与整行按钮点击）
-      Row({ space: 12 }) {
+      // 核心开关与一键重启卡片
+      Row({ space: 8 }) {
         Column({ space: 3 }) {
           Text(this.daemonEnabled ? '⚡ 开屏广告自动跳过已开启' : '⏸️ 开屏广告自动跳过已暂停')
             .fontSize(14)
             .fontWeight(FontWeight.Bold)
             .fontColor('#182431')
-          Text(this.daemonEnabled ? '自动检测应用开屏「跳过」控件并执行毫秒级点击' : '当前已暂停自动跳过，点击右侧开关即可恢复')
+          Text(this.daemonEnabled ? '若遇到跳过失效，可点击「重启」或重新开启即时恢复' : '当前已暂停自动跳过，点击右侧「开启」即可恢复并重置引擎')
             .fontSize(11)
             .fontColor('#666666')
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
+        .onClick(() => {
+          this.toggleLocalSkipDaemon();
+        })
+
+        Button('🔄 重启')
+          .height(34)
+          .padding({ left: 12, right: 12 })
+          .fontSize(12)
+          .fontWeight(FontWeight.Medium)
+          .backgroundColor('#0052D9')
+          .onClick(() => {
+            this.syncLocalSkipDaemon('/restart');
+          })
 
         Button(this.daemonEnabled ? '暂停' : '开启')
           .height(34)
-          .padding({ left: 16, right: 16 })
+          .padding({ left: 14, right: 14 })
           .fontSize(13)
           .fontWeight(FontWeight.Medium)
           .backgroundColor(this.daemonEnabled ? '#ED7B2F' : '#00A870')
-          .hitTestBehavior(HitTestMode.None)
+          .onClick(() => {
+            this.toggleLocalSkipDaemon();
+          })
       }
       .width('100%')
       .padding({ left: 14, right: 14, top: 10, bottom: 10 })
@@ -534,9 +561,6 @@ struct Index {
       .border({
         width: 1,
         color: this.daemonEnabled ? '#B8EBD6' : '#FAD9B8'
-      })
-      .onClick(() => {
-        this.toggleLocalSkipDaemon();
       })
 
       // 日志操作栏

@@ -20,6 +20,9 @@ static std::atomic<bool> g_daemonEnabled{true};
 static std::atomic<bool> g_daemonRunning{false};
 static std::atomic<int> g_lastSkipCount{0};
 static std::atomic<int> g_lastPid{0};
+static std::atomic<long long> g_lastHeartbeatMs{0};
+static std::atomic<long long> g_bridgeStartMs{0};
+static std::atomic<bool> g_pendingReset{false};
 static int g_lastLoggedSkipCount = 0;
 static bool g_readyLogged = false;
 
@@ -27,6 +30,12 @@ static const char *kFilesDir = "/data/storage/el2/base/haps/entry/files";
 static const char *kStatusFile = "/data/storage/el2/base/haps/entry/files/adskip_status.json";
 static const char *kControlFile = "/data/storage/el2/base/haps/entry/files/adskip_control.txt";
 static const char *kSkipLogFile = "/data/storage/el2/base/haps/entry/files/adskip_skip.log";
+
+static long long now_epoch_ms() {
+    struct timeval tv{};
+    gettimeofday(&tv, nullptr);
+    return (long long)tv.tv_sec * 1000LL + (long long)(tv.tv_usec / 1000);
+}
 
 static std::string now_time_str() {
     struct timeval tv{};
@@ -63,7 +72,35 @@ static std::string read_file_str(const char *path) {
     return std::string(buf, n);
 }
 
+static void sync_status_from_disk() {
+    std::string st = read_file_str(kStatusFile);
+    if (st.empty()) {
+        return;
+    }
+    if (st.find("\"running\":true") != std::string::npos) {
+        g_daemonRunning.store(true);
+    } else if (st.find("\"running\":false") != std::string::npos) {
+        g_daemonRunning.store(false);
+    }
+    size_t scPos = st.find("\"skippedCount\":");
+    if (scPos != std::string::npos) {
+        int savedCount = atoi(st.c_str() + scPos + 15);
+        if (savedCount > g_lastSkipCount.load()) {
+            g_lastSkipCount.store(savedCount);
+            g_lastLoggedSkipCount = savedCount;
+        }
+    }
+    size_t pidPos = st.find("\"pid\":");
+    if (pidPos != std::string::npos) {
+        int savedPid = atoi(st.c_str() + pidPos + 6);
+        if (savedPid > 0) {
+            g_lastPid.store(savedPid);
+        }
+    }
+}
+
 static void write_status_json() {
+    sync_status_from_disk();
     std::string runningStr = g_daemonRunning.load() ? "true" : "false";
     std::string enabledStr = g_daemonEnabled.load() ? "true" : "false";
     std::string json = "{\"running\":" + runningStr +
@@ -101,18 +138,7 @@ static void ensure_shared_permissions() {
         }
     }
 
-    std::string st = read_file_str(kStatusFile);
-    if (st.find("\"running\":true") != std::string::npos) {
-        g_daemonRunning.store(true);
-    }
-    size_t scPos = st.find("\"skippedCount\":");
-    if (scPos != std::string::npos) {
-        int savedCount = atoi(st.c_str() + scPos + 15);
-        if (savedCount > 0) {
-            g_lastSkipCount.store(savedCount);
-            g_lastLoggedSkipCount = savedCount;
-        }
-    }
+    sync_status_from_disk();
 }
 
 static std::vector<std::string> split_pipe(const std::string &s) {
@@ -187,8 +213,13 @@ static void bridge_server_loop() {
                     payload.pop_back();
                 }
                 if (g_daemonEnabled.load()) {
-                    const char *r = "250 ENABLED\r\n";
-                    send(client_fd, r, strlen(r), 0);
+                    if (g_pendingReset.exchange(false)) {
+                        const char *r = "250 RESET\r\n";
+                        send(client_fd, r, strlen(r), 0);
+                    } else {
+                        const char *r = "250 ENABLED\r\n";
+                        send(client_fd, r, strlen(r), 0);
+                    }
                 } else {
                     const char *r = "550 PAUSED\r\n";
                     send(client_fd, r, strlen(r), 0);
@@ -206,6 +237,7 @@ static void bridge_server_loop() {
         close(client_fd);
 
         if (!payload.empty()) {
+            g_lastHeartbeatMs.store(now_epoch_ms());
             std::vector<std::string> parts = split_pipe(payload);
             if (parts.size() >= 4 && (parts[0] == "STATUS" || parts[0] == "READY")) {
                 g_daemonRunning.store(true);
@@ -259,6 +291,7 @@ __attribute__((constructor))
 static void on_load_bridge() {
     ensure_shared_permissions();
     if (!g_bridgeStarted.exchange(true)) {
+        g_bridgeStartMs.store(now_epoch_ms());
         std::thread(bridge_server_loop).detach();
     }
 }
@@ -266,6 +299,7 @@ static void on_load_bridge() {
 static napi_value InitBridge(napi_env env, napi_callback_info info) {
     ensure_shared_permissions();
     if (!g_bridgeStarted.exchange(true)) {
+        g_bridgeStartMs.store(now_epoch_ms());
         std::thread(bridge_server_loop).detach();
     }
     napi_value result;
@@ -284,8 +318,17 @@ static napi_value SetDaemonEnabled(napi_env env, napi_callback_info info) {
     }
 
     g_daemonEnabled.store(enabled);
-    write_file_str(kControlFile, enabled ? "ENABLED\n" : "PAUSED\n", false);
+    if (enabled) {
+        g_pendingReset.store(true);
+        std::string ctrlContent = "ENABLED:" + std::to_string(now_epoch_ms()) + "\n";
+        write_file_str(kControlFile, ctrlContent, false);
+    } else {
+        g_pendingReset.store(false);
+        write_file_str(kControlFile, "PAUSED\n", false);
+    }
+    chmod(kControlFile, 0666);
     write_status_json();
+    chmod(kStatusFile, 0666);
 
     napi_value result;
     napi_get_boolean(env, enabled, &result);
@@ -293,6 +336,7 @@ static napi_value SetDaemonEnabled(napi_env env, napi_callback_info info) {
 }
 
 static napi_value GetDaemonEnabled(napi_env env, napi_callback_info info) {
+    sync_status_from_disk();
     napi_value result;
     napi_get_boolean(env, g_daemonEnabled.load(), &result);
     return result;
@@ -302,6 +346,7 @@ EXTERN_C_START
 static napi_value Init(napi_env env, napi_value exports) {
     ensure_shared_permissions();
     if (!g_bridgeStarted.exchange(true)) {
+        g_bridgeStartMs.store(now_epoch_ms());
         std::thread(bridge_server_loop).detach();
     }
     napi_property_descriptor desc[] = {
