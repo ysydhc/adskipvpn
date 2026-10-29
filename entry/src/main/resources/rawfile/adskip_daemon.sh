@@ -196,6 +196,9 @@ NO_BTN_TICKS=0
 HB_SEQ=0
 BRIDGE_SYNC_TICKS=0
 DUMP_COUNT_SINCE_RESET=0
+WAS_SCREEN_OFF=0
+WAS_IN_SYSTEM=0
+IS_RESUME_EVENT=0
 
 write_status_file() {
   echo "{\"running\":true,\"enabled\":$ENABLED,\"skippedCount\":$SKIP_COUNT,\"pid\":$$}" > "/data/local/tmp/adskip_status.json" 2>/dev/null || true
@@ -321,6 +324,7 @@ while true; do
   DUMP_COUNT_SINCE_RESET=$((DUMP_COUNT_SINCE_RESET + 1))
 
   if [ ! -s "$DUMP_JSON" ]; then
+    WAS_SCREEN_OFF=1
     # 检查是否为 uitest start-daemon 广播通道死锁 (Wait for subscribe uitest.broadcast.command.reply timeout)
     read -r ULOG_LINE < "$UITEST_LOG" 2>/dev/null || ULOG_LINE=""
     case "$ULOG_LINE" in
@@ -331,9 +335,15 @@ while true; do
         continue
         ;;
     esac
-    # 正常息屏或锁屏状态，深度省电休眠 1.5s
-    sleep 1.5
+    # 正常息屏或锁屏状态，深度省电休眠 1.2s
+    sleep 1.2
     continue
+  fi
+
+  # 若之前处于息屏或锁屏状态，当前恢复获取布局：说明发生了亮屏唤醒/解锁动作 (Screen-On Resume)
+  if [ "$WAS_SCREEN_OFF" -eq 1 ]; then
+    WAS_SCREEN_OFF=0
+    IS_RESUME_EVENT=1
   fi
 
   # 3. 提取所有节点属性行与当前前台应用包名
@@ -342,16 +352,19 @@ while true; do
   read -r CUR_BUNDLE < "$BUNDLE_TXT" 2>/dev/null || CUR_BUNDLE=""
 
   if [ -z "$CUR_BUNDLE" ]; then
-    # 在系统桌面时：若 uitest 累计采样超过 350 次，主动重置一次 uitest start-daemon 防止其长期运行内存/CPU膨胀
-    if [ "$DUMP_COUNT_SINCE_RESET" -ge 350 ]; then
-      /bin/killall -9 uitest >/dev/null 2>&1 || true
-      DUMP_COUNT_SINCE_RESET=0
-    fi
+    # 当前处于系统桌面或多任务后台选择视图：置位 WAS_IN_SYSTEM 标志
+    WAS_IN_SYSTEM=1
     LAST_BUNDLE=""
     IN_CLICK_STREAK=0
     NO_BTN_TICKS=0
     IN_APP_TICKS=0
     SKIPPED_IN_APP=0
+
+    # 在系统桌面时：若 uitest 累计采样超过 350 次，主动重置一次 uitest start-daemon 防止其长期运行内存/CPU膨胀
+    if [ "$DUMP_COUNT_SINCE_RESET" -ge 350 ]; then
+      /bin/killall -9 uitest >/dev/null 2>&1 || true
+      DUMP_COUNT_SINCE_RESET=0
+    fi
     sleep 0.3
     continue
   fi
@@ -379,7 +392,10 @@ while true; do
       ;;
   esac
 
-  if [ "$CUR_BUNDLE" != "$LAST_BUNDLE" ]; then
+  # 判定是否发生应用冷启动、切回前台 (Resume)、多任务唤回、息屏点亮进入应用：
+  if [ "$WAS_IN_SYSTEM" -eq 1 ] || [ "$IS_RESUME_EVENT" -eq 1 ] || [ "$CUR_BUNDLE" != "$LAST_BUNDLE" ]; then
+    WAS_IN_SYSTEM=0
+    IS_RESUME_EVENT=0
     LAST_BUNDLE="$CUR_BUNDLE"
     IN_CLICK_STREAK=0
     NO_BTN_TICKS=0
@@ -389,20 +405,10 @@ while true; do
     IN_APP_TICKS=$((IN_APP_TICKS + 1))
   fi
 
-  # 若在同一应用内已成功跳过开屏广告且已稳定进入主页，或进入同一应用已超过 15 轮 (~5秒无开屏广告)，
-  # 进入低功耗巡检模式 (0.7s/次)，避免在应用正常使用期间高频 dumpLayout 造成掉帧
-  if [ "$SKIPPED_IN_APP" -eq 1 ] && [ "$NO_BTN_TICKS" -ge 2 ]; then
-    sleep 0.7
-    continue
-  fi
-  if [ "$IN_APP_TICKS" -gt 15 ] && [ "$IN_CLICK_STREAK" -eq 0 ]; then
-    sleep 0.7
-    continue
-  fi
-
   # 4. 单次 sed 直接提取可见“跳过 / 跳过广告”按钮的 x1:y1:x2:y2 到文件
+  # 支持 text / originalText / description / accessibilityText 等多种鸿蒙控件属性
   : > "$BOUNDS_TXT"
-  /bin/sed -E -n '/"visible":"true"/!d; /QuickBackText|AdSkip|adskip|跳过&VPN|控制台|跳过片头|跳过片尾|跳过前奏|跳过空白|跳过静音|自动跳过|无障碍|已自动跳过|点击跳过/d; /"(text|originalText|description)":"[^"]{0,15}(跳过|跳过广告|关闭广告|Skip|SKIP)[^"]{0,15}"|"(id|key)":"[^"]*(skip|splash_skip|ad_skip|tv_skip|btn_skip)[^"]*"/s/.*"bounds":"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1:\2:\3:\4/p' "$ATTRS_TXT" > "$BOUNDS_TXT" 2>/dev/null || true
+  /bin/sed -E -n '/"visible":"true"/!d; /QuickBackText|AdSkip|adskip|跳过&VPN|控制台|跳过片头|跳过片尾|跳过前奏|跳过空白|跳过静音|自动跳过|无障碍|已自动跳过|点击跳过/d; /"(text|originalText|description|accessibilityText)":"[^"]{0,15}(跳过|跳过广告|关闭广告|[Ss][Kk][Ii][Pp])[^"]{0,15}"|"(id|key)":"[^"]*(skip|splash_skip|ad_skip|tv_skip|btn_skip|skip_view)[^"]*"/s/.*"bounds":"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1:\2:\3:\4/p' "$ATTRS_TXT" > "$BOUNDS_TXT" 2>/dev/null || true
 
   if [ -s "$BOUNDS_TXT" ]; then
     NO_BTN_TICKS=0
@@ -411,7 +417,8 @@ while true; do
       if [ -n "$x1" ] && [ -n "$y2" ]; then
         w=$((x2 - x1))
         h=$((y2 - y1))
-        if [ "$w" -ge 20 ] && [ "$w" -le 800 ] && [ "$h" -ge 16 ] && [ "$h" -le 300 ] && [ "$x1" -ge 450 ] && [ "$y1" -ge 115 ] && [ "$y2" -le 2650 ]; then
+        # 尺寸与区域校验：排除全屏背景陷阱与状态栏 (<40)
+        if [ "$w" -ge 20 ] && [ "$w" -le 850 ] && [ "$h" -ge 16 ] && [ "$h" -le 300 ] && [ "$x1" -ge 10 ] && [ "$y1" -ge 40 ] && [ "$y2" -le 2800 ]; then
           cx=$(( (x1 + x2) / 2 ))
           cy=$(( (y1 + y2) / 2 ))
           /bin/uinput -T -d "$cx" "$cy" -i 55 -u "$cx" "$cy" >/dev/null 2>&1
@@ -429,7 +436,7 @@ while true; do
 
     if [ "$CLICKED" -eq 1 ]; then
       IN_APP_TICKS=0
-      sleep 0.15
+      sleep 0.12
       continue
     fi
   else
@@ -439,6 +446,14 @@ while true; do
     fi
   fi
 
-  # 5. 刚切入新应用的开屏窗口期 (前 15 轮) 每 0.15s 采样一次，既不阻塞应用冷启动渲染又能瞬间命中跳过按钮
-  sleep 0.15
+  # 5. 节奏调度：
+  # A. 开屏与切回前台（Resume）窗口期 (前 15 轮，约 2 秒内)：
+  #    高频突发采样 (每 0.12s 采样一次)，确保冷热启动、后台切回、锁屏亮屏时的广告露头就秒；
+  # B. 应用稳态使用期 (已连续运行超过 15 轮无广告，或已完成跳过)：
+  #    低功耗巡检模式 (每 0.5s 采样一次)，保证不掉帧、低耗电，且仍能捕捉突发热切回与插屏广告。
+  if [ "$IN_APP_TICKS" -le 15 ] && [ "$SKIPPED_IN_APP" -eq 0 ]; then
+    sleep 0.12
+  else
+    sleep 0.5
+  fi
 done

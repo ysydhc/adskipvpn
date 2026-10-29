@@ -100,12 +100,6 @@ struct Index {
       const context = getContext(this) as common.UIAbilityContext;
       const scriptPath = context.filesDir + '/adskip_daemon.sh';
       const rawScript = context.resourceManager.getRawFileContentSync('adskip_daemon.sh');
-      if (fileIo.accessSync(scriptPath)) {
-        const stat = fileIo.statSync(scriptPath);
-        if (stat.size > rawScript.byteLength) {
-          return;
-        }
-      }
       const sFile = fileIo.openSync(scriptPath, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
       fileIo.writeSync(sFile.fd, rawScript.buffer);
       fileIo.closeSync(sFile);
@@ -526,11 +520,11 @@ struct Index {
       // 核心开关与一键重启卡片
       Row({ space: 8 }) {
         Column({ space: 3 }) {
-          Text(this.daemonEnabled ? '⚡ 开屏广告自动跳过已开启' : '⏸️ 开屏广告自动跳过已暂停')
+          Text(this.daemonEnabled ? '⚡ 全场景广告自动跳过已开启 (含Resume/切回秒跳)' : '⏸️ 广告自动跳过已暂停')
             .fontSize(14)
             .fontWeight(FontWeight.Bold)
             .fontColor('#182431')
-          Text(this.daemonEnabled ? '若遇到跳过失效，可点击「重启」或重新开启即时恢复' : '当前已暂停自动跳过，点击右侧「开启」即可恢复并重置引擎')
+          Text(this.daemonEnabled ? '已增强支持冷热启动、后台Resume切回与锁屏亮屏广告秒跳。若失效可点「重启」' : '当前已暂停自动跳过，点击右侧「开启」即可恢复并重置引擎')
             .fontSize(11)
             .fontColor('#666666')
         }

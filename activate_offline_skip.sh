@@ -13,6 +13,7 @@ HDC="${HDC:-/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/too
   echo "ENABLED" > /data/local/tmp/adskip_ctrl_state.txt
   /bin/chmod 666 /data/local/tmp/adskip_ctrl_state.txt
   /bin/chmod 755 /data/local/tmp/adskip_daemon.sh
+  /bin/cp -f /data/local/tmp/adskip_daemon.sh /data/app/el2/100/base/com.ysydhc.adskipvpn/haps/entry/files/adskip_daemon.sh 2>/dev/null || true
   aa start -a EntryAbility -b com.ysydhc.adskipvpn >/dev/null 2>&1 || true
   /bin/sleep 1
   /bin/nohup /bin/sh /data/local/tmp/adskip_daemon.sh >/dev/null 2>&1 </dev/null &
