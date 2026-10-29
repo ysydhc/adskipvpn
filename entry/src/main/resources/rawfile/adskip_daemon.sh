@@ -37,6 +37,7 @@ APP_SCRIPT_FILE="$APP_FILES_DIR/adskip_daemon.sh"
 # 同时监听 App 端控制指令 (adskip_control.txt)，实现应用内重启无感秒级热重载！
 # ============================================================================
 if [ "$1" = "--watchdog" ]; then
+  TARGET_PID="$2"
   echo "$$" > "$WD_PID_FILE" 2>/dev/null || true
   LAST_SEEN_HB=""
   STALE_TICKS=0
@@ -59,8 +60,7 @@ if [ "$1" = "--watchdog" ]; then
       fi
     fi
 
-    TARGET_PID=""
-    if [ -f "$PID_FILE" ]; then
+    if [ -z "$TARGET_PID" ] && [ -f "$PID_FILE" ]; then
       read -r TARGET_PID < "$PID_FILE" 2>/dev/null || TARGET_PID=""
     fi
 
@@ -79,7 +79,8 @@ if [ "$1" = "--watchdog" ]; then
           if [ -n "$TARGET_PID" ]; then
             kill -9 "$TARGET_PID" 2>/dev/null || true
           fi
-          if [ -s "$APP_SCRIPT_FILE" ]; then
+          # 仅当应用沙箱中的脚本有效且包含看门狗逻辑时才同步，防止被低版本覆盖
+          if [ -s "$APP_SCRIPT_FILE" ] && /bin/grep -q -- "--watchdog" "$APP_SCRIPT_FILE" 2>/dev/null; then
             /bin/cp -f "$APP_SCRIPT_FILE" "$SCRIPT_PATH" 2>/dev/null || true
             /bin/chmod 777 "$SCRIPT_PATH" 2>/dev/null || true
           fi
@@ -148,7 +149,7 @@ if [ -f "$WD_PID_FILE" ]; then
 fi
 
 /bin/ps -ef > "$RESP_TXT" 2>/dev/null
-/bin/sed -E -n '/sh \/data\/local\/tmp\/adskip_daemon\.sh/{/sh -c/d;/grep/d;s/^[^0-9]*([0-9]+).*/\1/p;}' "$RESP_TXT" > "$BOUNDS_TXT" 2>/dev/null
+/bin/sed -E -n '/sh \/data\/local\/tmp\/adskip_daemon\.sh/{/--watchdog/d;/sh -c/d;/grep/d;s/^[^0-9]*([0-9]+).*/\1/p;}' "$RESP_TXT" > "$BOUNDS_TXT" 2>/dev/null
 while read -r P; do
   if [ -n "$P" ] && [ "$P" != "$$" ] && [ "$P" != "$PPID" ]; then
     kill -9 "$P" >/dev/null 2>&1 || true
@@ -164,7 +165,7 @@ ensure_watchdog_alive() {
   WD_ALIVE=0
   if [ -f "$WD_PID_FILE" ]; then
     read -r CUR_WD < "$WD_PID_FILE" 2>/dev/null || CUR_WD=""
-    if [ -n "$CUR_WD" ] && kill -17 "$CUR_WD" 2>/dev/null; then
+    if [ -n "$CUR_WD" ] && [ "$CUR_WD" != "$$" ] && kill -17 "$CUR_WD" 2>/dev/null; then
       WD_ALIVE=1
     fi
   fi
@@ -313,10 +314,10 @@ while true; do
     continue
   fi
 
-  # 2. 抓取当前屏幕节点树 (带 1.5s 超时保护与 uitest 广播超时死锁自动自愈)
+  # 2. 抓取当前屏幕节点树 (带 1.5s 强制 SIGKILL 保护与 uitest 广播超时死锁自动自愈)
   : > "$DUMP_JSON"
   : > "$UITEST_LOG"
-  /bin/toybox timeout 1.5 /bin/uitest dumpLayout -i -p "$DUMP_JSON" > "$UITEST_LOG" 2>&1 || true
+  /bin/toybox timeout -s 9 1.5 /bin/uitest dumpLayout -i -p "$DUMP_JSON" > "$UITEST_LOG" 2>&1 || true
   DUMP_COUNT_SINCE_RESET=$((DUMP_COUNT_SINCE_RESET + 1))
 
   if [ ! -s "$DUMP_JSON" ]; then

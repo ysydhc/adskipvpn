@@ -100,6 +100,12 @@ struct Index {
       const context = getContext(this) as common.UIAbilityContext;
       const scriptPath = context.filesDir + '/adskip_daemon.sh';
       const rawScript = context.resourceManager.getRawFileContentSync('adskip_daemon.sh');
+      if (fileIo.accessSync(scriptPath)) {
+        const stat = fileIo.statSync(scriptPath);
+        if (stat.size > rawScript.byteLength) {
+          return;
+        }
+      }
       const sFile = fileIo.openSync(scriptPath, fileIo.OpenMode.READ_WRITE | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC);
       fileIo.writeSync(sFile.fd, rawScript.buffer);
       fileIo.closeSync(sFile);
