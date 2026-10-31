@@ -15,6 +15,7 @@ DUMP_JSON="/data/local/tmp/skip_v3.json"
 ATTRS_TXT="/data/local/tmp/adskip_attrs.txt"
 BUNDLE_TXT="/data/local/tmp/adskip_bundle.txt"
 BOUNDS_TXT="/data/local/tmp/adskip_bounds.txt"
+CAND_TXT="/data/local/tmp/adskip_cand.txt"
 RESP_TXT="/data/local/tmp/adskip_resp.txt"
 UITEST_LOG="/data/local/tmp/adskip_uitest.log"
 HEARTBEAT_FILE="/data/local/tmp/adskip_heartbeat"
@@ -183,6 +184,8 @@ if [ -f "/data/local/tmp/adskip_status.json" ]; then
   fi
 fi
 
+SCREEN_W=1260
+SCREEN_H=2844
 LAST_BUNDLE=""
 IN_APP_TICKS=0
 SKIPPED_IN_APP=0
@@ -263,14 +266,15 @@ record_skip_event() {
   BUNDLE_ARG="$1"
   COORD_ARG="$2"
   BOUNDS_ARG="$3"
+  TYPE_ARG="${4:-标准特征匹配}"
   /bin/date '+%H:%M:%S' > "$RESP_TXT" 2>/dev/null
   read -r TIME_STR < "$RESP_TXT" 2>/dev/null || TIME_STR="00:00:00"
   LAST_SKIP_TIME="$TIME_STR"
   LAST_SKIP_BUNDLE="$BUNDLE_ARG"
   LAST_SKIP_COORD="$COORD_ARG"
   LAST_SKIP_BOUNDS="$BOUNDS_ARG"
-  echo "$TIME_STR [SKIP] bundle=$BUNDLE_ARG coord=($COORD_ARG) bounds=$BOUNDS_ARG" >> "$HISTORY_LOG" 2>/dev/null || true
-  append_app_skip_log "$TIME_STR [SKIP] ⚡ 成功自动跳过开屏广告! 应用=$BUNDLE_ARG | 触控坐标=($COORD_ARG) | 区域=$BOUNDS_ARG"
+  echo "$TIME_STR [SKIP] bundle=$BUNDLE_ARG coord=($COORD_ARG) bounds=$BOUNDS_ARG type=$TYPE_ARG" >> "$HISTORY_LOG" 2>/dev/null || true
+  append_app_skip_log "$TIME_STR [SKIP] ⚡ 成功自动跳过开屏广告! 应用=$BUNDLE_ARG | 坐标=($COORD_ARG) | 区域=$BOUNDS_ARG | 机制=$TYPE_ARG"
   sync_bridge_if_listening "STATUS"
 }
 
@@ -415,18 +419,40 @@ while true; do
     IN_APP_TICKS=$((IN_APP_TICKS + 1))
   fi
 
-  # 4. 单次 sed 直接提取可见“跳过 / 跳过广告”按钮的 x1:y1:x2:y2 到文件
-  # 支持 text / originalText / description / accessibilityText 等多种鸿蒙控件属性
-  : > "$BOUNDS_TXT"
-  /bin/sed -E -n '/"visible":"true"/!d; /QuickBackText|AdSkip|adskip|跳过&VPN|控制台|跳过片头|跳过片尾|跳过前奏|跳过空白|跳过静音|无障碍|已自动跳过/d; /"(text|originalText|description|accessibilityText)":"[^"]{0,15}(跳[[:space:]]*过|跳过广告|点击跳过|关闭广告|[Ss][Kk][Ii][Pp])[^"]{0,15}"|"(id|key)":"[^"]*(skip|splash_skip|ad_skip|tv_skip|btn_skip|skip_view)[^"]*"/s/.*"bounds":"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1:\2:\3:\4/p' "$ATTRS_TXT" > "$BOUNDS_TXT" 2>/dev/null || true
+  # 动态自适应屏幕分辨率与右上角安全跳过区域 (全分辨率自适应)
+  ROOT_RES=$(/bin/sed -n '1s/.*"bounds":"\[0,0\]\[\([0-9]*\),\([0-9]*\)\]".*/\1:\2/p' "$ATTRS_TXT" 2>/dev/null)
+  if [ -n "$ROOT_RES" ]; then
+    RW="${ROOT_RES%:*}"
+    RH="${ROOT_RES#*:}"
+    if [ "$RW" -ge 400 ] && [ "$RH" -ge 600 ]; then
+      SCREEN_W="$RW"
+      SCREEN_H="$RH"
+    fi
+  fi
+  MIN_CAND_X=$(( SCREEN_W * 68 / 100 ))
+  MAX_CAND_Y=$(( SCREEN_H * 15 / 100 ))
+  MIN_CAND_Y=$(( SCREEN_H * 2 / 100 ))
 
+  # 4. 第一层：通用多模态文本、符号与主流广告 SDK 特征提取
+  # A 规则：跳过关键词、关闭符号、主流联盟 SDK 核心 ID (广点通/TAD/穿山甲/快手/百青藤/华为HiAd)
+  : > "$BOUNDS_TXT"
+  /bin/sed -E -n '/"visible":"true"/!d; /QuickBackText|AdSkip|adskip|跳过&VPN|控制台|跳过片头|跳过片尾|跳过前奏|跳过空白|跳过静音|无障碍|已自动跳过/d; /"(text|originalText|description|accessibilityText)":"[^"]{0,20}(跳[[:space:]]*过|跳过广告|点击跳过|关闭广告|[Ss][Kk][Ii][Pp]|关闭|不再提示|忽略)[^"]{0,20}"|"(id|key)":"[^"]*(skip|splash_skip|ad_skip|tv_skip|btn_skip|skip_view|tad_|splash_btn|gdt_|btn_close|iv_close|tt_splash|tt_ad_skip|ksad_|mobads_|hiad_)[^"]*"/s/.*"bounds":"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1:\2:\3:\4:STD/p' "$ATTRS_TXT" > "$BOUNDS_TXT" 2>/dev/null || true
+
+  # B 规则：右上角纯数字/倒计时跳过 (如 "5s", "4s", "5秒", "3")
+  /bin/sed -E -n '/"visible":"true"/!d; /"(text|originalText)":"[[:space:]]*[0-9]{1,2}[[:space:]]*(s|S|秒)?[[:space:]]*"/s/.*"bounds":"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1:\2:\3:\4:CD/p' "$ATTRS_TXT" >> "$BOUNDS_TXT" 2>/dev/null || true
+
+  CLICKED=0
   if [ -s "$BOUNDS_TXT" ]; then
-    NO_BTN_TICKS=0
-    CLICKED=0
-    while IFS=":" read -r x1 y1 x2 y2; do
+    while IFS=":" read -r x1 y1 x2 y2 tag; do
       if [ -n "$x1" ] && [ -n "$y2" ]; then
         w=$((x2 - x1))
         h=$((y2 - y1))
+        # 若为倒计时规则，强制限制在右上角跳过区域，防止页面其他数字误触
+        if [ "$tag" = "CD" ]; then
+          if [ "$x1" -lt "$MIN_CAND_X" ] || [ "$y1" -lt "$MIN_CAND_Y" ] || [ "$y2" -gt "$MAX_CAND_Y" ]; then
+            continue
+          fi
+        fi
         # 尺寸与区域校验：排除全屏背景陷阱与状态栏 (<40)
         if [ "$w" -ge 20 ] && [ "$w" -le 850 ] && [ "$h" -ge 16 ] && [ "$h" -le 300 ] && [ "$x1" -ge 10 ] && [ "$y1" -ge 40 ] && [ "$y2" -le 2800 ]; then
           cx=$(( (x1 + x2) / 2 ))
@@ -436,19 +462,76 @@ while true; do
             SKIP_COUNT=$((SKIP_COUNT + 1))
             IN_CLICK_STREAK=1
             SKIPPED_IN_APP=1
-            record_skip_event "$CUR_BUNDLE" "${cx},${cy}" "[${x1},${y1}][${x2},${y2}]"
+            record_skip_event "$CUR_BUNDLE" "${cx},${cy}" "[${x1},${y1}][${x2},${y2}]" "🎯 标准特征匹配"
           fi
           CLICKED=1
           break
         fi
       fi
     done < "$BOUNDS_TXT"
+  fi
 
-    if [ "$CLICKED" -eq 1 ]; then
-      IN_APP_TICKS=0
-      sleep 0.12
-      continue
+  # --------------------------------------------------------------------------
+  # 第二层：通用开屏广告场景感知与右上角胶囊启发式兜底 (Heuristic Probe)
+  # 仅在刚进入应用的开屏/切回窗口期 (前 22 轮采样内) 且第一层未命中时生效
+  # --------------------------------------------------------------------------
+  if [ "$CLICKED" -eq 0 ] && [ "$IN_APP_TICKS" -le 22 ] && [ "$SKIPPED_IN_APP" -eq 0 ]; then
+    HAS_AD_SIGNAL=0
+    if /bin/grep -q -E '"(text|originalText|description|accessibilityText)":"[^"]*(广告|[Aa][Dd]|推广|商业推广|摇一摇|扭一扭|翻转|滑动浏览|进入第三方|第三方应用|查看详情|了解详情)[^"]*"' "$ATTRS_TXT" 2>/dev/null || \
+       /bin/grep -q -E '"(id|key)":"[^"]*(splash|ad_container|tad_|gdt_|tt_splash|ksad_|mobads_|hiad_)[^"]*"' "$ATTRS_TXT" 2>/dev/null; then
+      HAS_AD_SIGNAL=1
     fi
+
+    if [ "$HAS_AD_SIGNAL" -eq 1 ]; then
+      # A. 检索落在右上角跳过区域的顶层可见组件 (Image/Stack/Row 等无文本胶囊)
+      : > "$CAND_TXT"
+      /bin/sed -E -n '/"visible":"true"/!d; /QuickBackText|AdSkip|adskip|控制台/d; s/.*"bounds":"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1:\2:\3:\4/p' "$ATTRS_TXT" > "$CAND_TXT" 2>/dev/null || true
+      
+      FOUND_CAND=0
+      while IFS=":" read -r cx1 cy1 cx2 cy2; do
+        if [ -n "$cx1" ] && [ -n "$cy2" ]; then
+          cw=$((cx2 - cx1))
+          ch=$((cy2 - cy1))
+          if [ "$cx1" -ge "$MIN_CAND_X" ] && [ "$cy1" -ge "$MIN_CAND_Y" ] && [ "$cy2" -le "$MAX_CAND_Y" ]; then
+            if [ "$cw" -ge 35 ] && [ "$cw" -le 320 ] && [ "$ch" -ge 20 ] && [ "$ch" -le 160 ]; then
+              tcx=$(( (cx1 + cx2) / 2 ))
+              tcy=$(( (cy1 + cy2) / 2 ))
+              /bin/uinput -T -d "$tcx" "$tcy" -i 55 -u "$tcx" "$tcy" >/dev/null 2>&1
+              if [ "$IN_CLICK_STREAK" -eq 0 ]; then
+                SKIP_COUNT=$((SKIP_COUNT + 1))
+                IN_CLICK_STREAK=1
+                SKIPPED_IN_APP=1
+                record_skip_event "$CUR_BUNDLE" "${tcx},${tcy}" "[${cx1},${cy1}][${cx2},${cy2}]" "⚡ 智能热区识别"
+              fi
+              CLICKED=1
+              FOUND_CAND=1
+              break
+            fi
+          fi
+        fi
+      done < "$CAND_TXT"
+
+      # B. 极端自绘场景兜底：纯 Canvas/XComponent 自绘且连节点都未暴露时，执行全机型通用右上角锚点探针
+      if [ "$FOUND_CAND" -eq 0 ] && [ "$IN_APP_TICKS" -le 10 ]; then
+        ANCHOR_X=$(( SCREEN_W * 90 / 100 ))
+        ANCHOR_Y=$(( SCREEN_H * 78 / 1000 ))
+        /bin/uinput -T -d "$ANCHOR_X" "$ANCHOR_Y" -i 55 -u "$ANCHOR_X" "$ANCHOR_Y" >/dev/null 2>&1
+        if [ "$IN_CLICK_STREAK" -eq 0 ]; then
+          SKIP_COUNT=$((SKIP_COUNT + 1))
+          IN_CLICK_STREAK=1
+          SKIPPED_IN_APP=1
+          record_skip_event "$CUR_BUNDLE" "${ANCHOR_X},${ANCHOR_Y}" "[探针锚点]" "🚀 全局通用锚点探针"
+        fi
+        CLICKED=1
+      fi
+    fi
+  fi
+
+  if [ "$CLICKED" -eq 1 ]; then
+    NO_BTN_TICKS=0
+    IN_APP_TICKS=0
+    sleep 0.12
+    continue
   else
     NO_BTN_TICKS=$((NO_BTN_TICKS + 1))
     if [ "$NO_BTN_TICKS" -ge 2 ]; then
@@ -457,11 +540,11 @@ while true; do
   fi
 
   # 5. 节奏调度：
-  # A. 开屏与切回前台（Resume）窗口期 (前 15 轮，约 2 秒内)：
+  # A. 开屏与切回前台（Resume）窗口期 (前 22 轮，约 3 秒内)：
   #    高频突发采样 (每 0.12s 采样一次)，确保冷热启动、后台切回、锁屏亮屏时的广告露头就秒；
-  # B. 应用稳态使用期 (已连续运行超过 15 轮无广告，或已完成跳过)：
+  # B. 应用稳态使用期 (已连续运行超过 22 轮无广告，或已完成跳过)：
   #    低功耗巡检模式 (每 0.5s 采样一次)，保证不掉帧、低耗电，且仍能捕捉突发热切回与插屏广告。
-  if [ "$IN_APP_TICKS" -le 15 ] && [ "$SKIPPED_IN_APP" -eq 0 ]; then
+  if [ "$IN_APP_TICKS" -le 22 ] && [ "$SKIPPED_IN_APP" -eq 0 ]; then
     sleep 0.12
   else
     sleep 0.5

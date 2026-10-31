@@ -54,6 +54,14 @@ export class AdDomainRules {
     'astrategy.beacon.qq.com',
     'tpstelemetry.tencent.com',
     'h.trace.qq.com',
+    'ad.tencentvideo.com',
+    'livep.l.qq.com',
+    'btrace.video.qq.com',
+    'tdac.video.qq.com',
+    'tms.video.qq.com',
+    'vmind.qq.com',
+    'wa.gtimg.com',
+    'tetrack.video.qq.com',
 
     // 3. 字节跳动 - 穿山甲联盟 (Pangolin)
     'pglstatp-toutiao.com',
@@ -86,7 +94,14 @@ export class AdDomainRules {
     'optimus-ads.amap.com',
     'adashx.ut.taobao.com',
 
-    // 7. 微博 / 网易云 / B站等常见开屏域名
+    // 7. 视频与内容平台 (爱奇艺 / 优酷 / 微博 / 网易云 / B站 / 华为) 开屏广告
+    'cupid.iqiyi.com',
+    'paopao.iqiyi.com',
+    'msg.71.am',
+    'atm.youku.com',
+    'ad.api.3g.youku.com',
+    'ads.huawei.com',
+    'metrics.data.hicloud.com',
     'sdkapp.uve.weibo.com',
     'alitui.weibo.com',
     'ad.music.163.com',
