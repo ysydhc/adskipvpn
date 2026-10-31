@@ -245,6 +245,20 @@ sync_bridge_if_listening() {
   fi
 }
 
+append_app_skip_log() {
+  NEW_MSG="$1"
+  TMP_APP_LOG="/data/local/tmp/adskip_app_log.tmp"
+  if [ -d "$APP_FILES_DIR" ]; then
+    if [ -f "$APP_SKIP_LOG" ]; then
+      /bin/toybox tail -n 80 "$APP_SKIP_LOG" > "$TMP_APP_LOG" 2>/dev/null || true
+    else
+      : > "$TMP_APP_LOG"
+    fi
+    echo "$NEW_MSG" >> "$TMP_APP_LOG" 2>/dev/null || true
+    /bin/cat "$TMP_APP_LOG" > "$APP_SKIP_LOG" 2>/dev/null || true
+  fi
+}
+
 record_skip_event() {
   BUNDLE_ARG="$1"
   COORD_ARG="$2"
@@ -256,9 +270,7 @@ record_skip_event() {
   LAST_SKIP_COORD="$COORD_ARG"
   LAST_SKIP_BOUNDS="$BOUNDS_ARG"
   echo "$TIME_STR [SKIP] bundle=$BUNDLE_ARG coord=($COORD_ARG) bounds=$BOUNDS_ARG" >> "$HISTORY_LOG" 2>/dev/null || true
-  if [ -f "$APP_SKIP_LOG" ]; then
-    echo "$TIME_STR [SKIP] ⚡ 成功自动跳过开屏广告! 应用=$BUNDLE_ARG | 触控坐标=($COORD_ARG) | 区域=$BOUNDS_ARG" >> "$APP_SKIP_LOG" 2>/dev/null || true
-  fi
+  append_app_skip_log "$TIME_STR [SKIP] ⚡ 成功自动跳过开屏广告! 应用=$BUNDLE_ARG | 触控坐标=($COORD_ARG) | 区域=$BOUNDS_ARG"
   sync_bridge_if_listening "STATUS"
 }
 
@@ -266,9 +278,7 @@ record_skip_event() {
 if [ "$1" = "--restarted" ]; then
   /bin/date '+%H:%M:%S' > "$RESP_TXT" 2>/dev/null
   read -r RESTART_TIME < "$RESP_TXT" 2>/dev/null || RESTART_TIME="00:00:00"
-  if [ -f "$APP_SKIP_LOG" ]; then
-    echo "$RESTART_TIME [SKIP-SVC] 🔄 开屏广告自动跳过引擎已重置并重新启动 (PID=$$)" >> "$APP_SKIP_LOG" 2>/dev/null || true
-  fi
+  append_app_skip_log "$RESTART_TIME [SKIP-SVC] 🔄 开屏广告自动跳过引擎已重置并重新启动 (PID=$$)"
 fi
 
 echo "$$:0" > "$HEARTBEAT_FILE" 2>/dev/null || true

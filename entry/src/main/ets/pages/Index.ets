@@ -149,6 +149,7 @@ struct Index {
           }
           if (typeof data.skippedCount === 'number' && data.skippedCount > this.skippedCount) {
             this.skippedCount = data.skippedCount;
+            this.reloadSkipLogs();
           }
         }
       }
