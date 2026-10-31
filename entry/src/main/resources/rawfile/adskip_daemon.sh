@@ -408,7 +408,7 @@ while true; do
   # 4. 单次 sed 直接提取可见“跳过 / 跳过广告”按钮的 x1:y1:x2:y2 到文件
   # 支持 text / originalText / description / accessibilityText 等多种鸿蒙控件属性
   : > "$BOUNDS_TXT"
-  /bin/sed -E -n '/"visible":"true"/!d; /QuickBackText|AdSkip|adskip|跳过&VPN|控制台|跳过片头|跳过片尾|跳过前奏|跳过空白|跳过静音|自动跳过|无障碍|已自动跳过|点击跳过/d; /"(text|originalText|description|accessibilityText)":"[^"]{0,15}(跳过|跳过广告|关闭广告|[Ss][Kk][Ii][Pp])[^"]{0,15}"|"(id|key)":"[^"]*(skip|splash_skip|ad_skip|tv_skip|btn_skip|skip_view)[^"]*"/s/.*"bounds":"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1:\2:\3:\4/p' "$ATTRS_TXT" > "$BOUNDS_TXT" 2>/dev/null || true
+  /bin/sed -E -n '/"visible":"true"/!d; /QuickBackText|AdSkip|adskip|跳过&VPN|控制台|跳过片头|跳过片尾|跳过前奏|跳过空白|跳过静音|无障碍|已自动跳过/d; /"(text|originalText|description|accessibilityText)":"[^"]{0,15}(跳[[:space:]]*过|跳过广告|点击跳过|关闭广告|[Ss][Kk][Ii][Pp])[^"]{0,15}"|"(id|key)":"[^"]*(skip|splash_skip|ad_skip|tv_skip|btn_skip|skip_view)[^"]*"/s/.*"bounds":"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1:\2:\3:\4/p' "$ATTRS_TXT" > "$BOUNDS_TXT" 2>/dev/null || true
 
   if [ -s "$BOUNDS_TXT" ]; then
     NO_BTN_TICKS=0
