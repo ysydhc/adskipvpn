@@ -5,6 +5,7 @@ import { fileIo } from '@kit.CoreFileKit';
 import { commonEventManager, BusinessError } from '@kit.BasicServicesKit';
 import { AdDomainRules } from '../vpn/AdDomainRules';
 import { VPN_LOG_EVENT, VPN_CMD_EVENT, VPN_TRACE_LOG_FILE } from '../vpn/VpnAdBlockEngine';
+import { TargetAppsManager, TargetAppItem, SkipMode, TargetAppsConfig, CustomProbeRule, AppSkipStrategy } from '../utils/TargetAppsManager';
 import adskipBridge from 'libadskip_bridge.so';
 
 const ADSKIP_LOG_FILE: string = '/adskip_skip.log';
@@ -33,6 +34,20 @@ struct Index {
     '[RULE] 智能识别开屏「跳过 / 跳过广告 / 关闭广告」控件并执行触控'
   ];
 
+  // ====== 目标跳过应用管理状态 ======
+  @State targetConfig: TargetAppsConfig = { mode: 'TARGETS_ONLY', apps: [] };
+  @State showTargetAppsPanel: boolean = false;
+  @State newAppName: string = '';
+  @State newAppBundle: string = '';
+  // 独立跳过策略与探针参数调节状态
+  @State editingProbeApp: TargetAppItem | null = null;
+  @State editStrategy: AppSkipStrategy = 'AUTO';
+  @State editDelayMs: string = '200';
+  @State editCoordX: string = '1135';
+  @State editCoordY: string = '185';
+  @State editRepeatTimes: string = '4';
+  @State editProbeEnabled: boolean = true;
+
   // ====== VPN 域名过滤状态 ======
   @State vpnRunning: boolean = false;
   @State blockedCount: number = 0;
@@ -59,6 +74,7 @@ struct Index {
     const context = getContext(this) as common.UIAbilityContext;
     AdDomainRules.syncCustomRulesFromDisk(context.filesDir);
     this.ruleCount = AdDomainRules.getAllRules().length;
+    this.loadTargetAppsConfig();
     this.extractBundledDaemonBinary();
     this.refreshAccessibilityStatus();
     this.reloadSkipLogs();
@@ -74,6 +90,7 @@ struct Index {
     const context = getContext(this) as common.UIAbilityContext;
     AdDomainRules.syncCustomRulesFromDisk(context.filesDir);
     this.ruleCount = AdDomainRules.getAllRules().length;
+    this.loadTargetAppsConfig();
     this.refreshAccessibilityStatus();
     this.reloadSkipLogs();
     this.reloadVpnLogs();
@@ -190,6 +207,127 @@ struct Index {
     } catch (_) {
       this.accessibilityEnabled = false;
     }
+  }
+
+  /**
+   * 目标跳过应用管理相关逻辑
+   */
+  private loadTargetAppsConfig(): void {
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      this.targetConfig = TargetAppsManager.loadConfig(context.filesDir);
+    } catch (_) {
+    }
+  }
+
+  private toggleTargetApp(bundleName: string, enabled: boolean): void {
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      this.targetConfig = TargetAppsManager.toggleApp(context.filesDir, bundleName, enabled);
+    } catch (_) {
+    }
+  }
+
+  private setSkipMode(mode: SkipMode): void {
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      this.targetConfig = TargetAppsManager.setMode(context.filesDir, mode);
+    } catch (_) {
+    }
+  }
+
+  private addCustomTargetApp(): void {
+    const bundle = this.newAppBundle.trim();
+    if (bundle.length === 0) {
+      return;
+    }
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      this.targetConfig = TargetAppsManager.addApp(context.filesDir, this.newAppName, bundle);
+      this.newAppName = '';
+      this.newAppBundle = '';
+    } catch (_) {
+    }
+  }
+
+  private openProbeRuleEditor(item: TargetAppItem): void {
+    this.editingProbeApp = item;
+    if (item.probeRule) {
+      this.editStrategy = item.probeRule.strategy || (item.probeRule.enabled ? 'PROBE' : 'AUTO');
+      this.editDelayMs = item.probeRule.delayMs.toString();
+      this.editCoordX = item.probeRule.coordX.toString();
+      this.editCoordY = item.probeRule.coordY.toString();
+      this.editRepeatTimes = (item.probeRule.repeatTimes || 4).toString();
+      this.editProbeEnabled = item.probeRule.enabled;
+    } else {
+      this.editStrategy = 'AUTO';
+      this.editDelayMs = '200';
+      this.editCoordX = '1135';
+      this.editCoordY = '185';
+      this.editRepeatTimes = '4';
+      this.editProbeEnabled = true;
+    }
+  }
+
+  private saveCurrentProbeRule(): void {
+    if (!this.editingProbeApp) {
+      return;
+    }
+    const delay = parseInt(this.editDelayMs.trim(), 10) || 0;
+    const cx = parseInt(this.editCoordX.trim(), 10) || 1135;
+    const cy = parseInt(this.editCoordY.trim(), 10) || 185;
+    const repeat = Math.max(1, Math.min(5, parseInt(this.editRepeatTimes.trim(), 10) || 4));
+    const newRule: CustomProbeRule = {
+      enabled: this.editStrategy !== 'DISABLED',
+      strategy: this.editStrategy,
+      delayMs: Math.max(0, Math.min(10000, delay)),
+      coordX: cx,
+      coordY: cy,
+      repeatTimes: repeat
+    };
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      this.targetConfig = TargetAppsManager.updateProbeRule(context.filesDir, this.editingProbeApp.bundleName, newRule);
+      this.appendSkipLog(`[CONFIG] 已更新【${this.editingProbeApp.name}】策略: 方式=${this.editStrategy} 延迟=${newRule.delayMs}ms 坐标=(${newRule.coordX},${newRule.coordY}) 次数=${newRule.repeatTimes}次`);
+    } catch (_) {
+    }
+    this.editingProbeApp = null;
+  }
+
+  private removeTargetApp(bundleName: string): void {
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      this.targetConfig = TargetAppsManager.removeApp(context.filesDir, bundleName);
+    } catch (_) {
+    }
+  }
+
+  private resetTargetAppsToDefault(): void {
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      this.targetConfig = TargetAppsManager.resetToDefault(context.filesDir);
+    } catch (_) {
+    }
+  }
+
+  private batchToggleAllTargetApps(enable: boolean): void {
+    try {
+      const context = getContext(this) as common.UIAbilityContext;
+      const cfg = TargetAppsManager.loadConfig(context.filesDir);
+      for (const item of cfg.apps) {
+        item.enabled = enable;
+      }
+      TargetAppsManager.saveConfig(context.filesDir, cfg);
+      this.targetConfig = cfg;
+    } catch (_) {
+    }
+  }
+
+  private getEnabledTargetAppsCount(): number {
+    if (!this.targetConfig || !this.targetConfig.apps) {
+      return 0;
+    }
+    return this.targetConfig.apps.filter((item: TargetAppItem) => item.enabled).length;
   }
 
   /**
@@ -473,153 +611,570 @@ struct Index {
   }
 
   /**
-   * 视图 1：⚡ 开屏广告自动点击跳过
+   * 🎯 目标应用白名单与模式管理卡片
    */
   @Builder
-  buildAutoSkipPage() {
-    Column({ space: 10 }) {
-      // 状态统计卡片
+  buildTargetAppsCard() {
+    Column({ space: 8 }) {
+      // 标题栏与折叠切换
       Row() {
-        Column({ space: 4 }) {
-          Text(this.daemonEnabled ? '已启用' : '已暂停')
-            .fontSize(16)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.daemonEnabled ? '#00A870' : '#ED7B2F')
-          Text(this.daemonRunning ? `守护运行中${this.daemonPid > 0 ? ' · PID ' + this.daemonPid : ''}` : '跳过服务状态')
-            .fontSize(11)
-            .fontColor('#666666')
-        }
-        .layoutWeight(1)
-
-        Column({ space: 4 }) {
-          Text(`${this.skippedCount}`)
-            .fontSize(18)
-            .fontWeight(FontWeight.Bold)
-            .fontColor('#7A3E9D')
-          Text('累计跳过 (次)')
-            .fontSize(11)
-            .fontColor('#666666')
-        }
-        .layoutWeight(1)
-
-        Column({ space: 4 }) {
-          Text('智能触控')
-            .fontSize(15)
-            .fontWeight(FontWeight.Bold)
-            .fontColor('#0052D9')
-          Text('跳过控件识别')
-            .fontSize(11)
-            .fontColor('#666666')
-        }
-        .layoutWeight(1)
-      }
-      .width('100%')
-      .padding(12)
-      .backgroundColor('#F1F3F5')
-      .borderRadius(10)
-
-      // 核心开关与一键重启卡片
-      Row({ space: 8 }) {
-        Column({ space: 3 }) {
-          Text(this.daemonEnabled ? '⚡ 全场景广告自动跳过已开启 (含Resume/切回秒跳)' : '⏸️ 广告自动跳过已暂停')
-            .fontSize(14)
-            .fontWeight(FontWeight.Bold)
-            .fontColor('#182431')
-          Text(this.daemonEnabled ? '已增强支持冷热启动、后台Resume切回与锁屏亮屏广告秒跳。若失效可点「重启」' : '当前已暂停自动跳过，点击右侧「开启」即可恢复并重置引擎')
+        Column({ space: 2 }) {
+          Row({ space: 4 }) {
+            Text('🎯 跳过目标应用')
+              .fontSize(14)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#182431')
+            Text(this.targetConfig.mode === 'TARGETS_ONLY' ? '仅目标应用(防误触)' : '全部应用(全局)')
+              .fontSize(10)
+              .fontWeight(FontWeight.Medium)
+              .fontColor(this.targetConfig.mode === 'TARGETS_ONLY' ? '#007F54' : '#0052D9')
+              .backgroundColor(this.targetConfig.mode === 'TARGETS_ONLY' ? '#E6F7F0' : '#EBF3FF')
+              .padding({ left: 6, right: 6, top: 2, bottom: 2 })
+              .borderRadius(4)
+          }
+          Text(`已启用 ${this.getEnabledTargetAppsCount()}/${this.targetConfig.apps.length} 款 · 未在清单应用 0 扫描 0 误触`)
             .fontSize(11)
             .fontColor('#666666')
         }
         .alignItems(HorizontalAlign.Start)
         .layoutWeight(1)
-        .onClick(() => {
-          this.toggleLocalSkipDaemon();
-        })
 
-        Button('🔄 重启')
-          .height(34)
-          .padding({ left: 12, right: 12 })
-          .fontSize(12)
-          .fontWeight(FontWeight.Medium)
-          .backgroundColor('#0052D9')
+        Button(this.showTargetAppsPanel ? '收起 ▲' : '管理 ▼')
+          .height(28)
+          .fontSize(11)
+          .backgroundColor(this.showTargetAppsPanel ? '#E5E8EB' : '#0052D9')
+          .fontColor(this.showTargetAppsPanel ? '#182431' : '#FFFFFF')
           .onClick(() => {
-            this.syncLocalSkipDaemon('/restart');
+            this.showTargetAppsPanel = !this.showTargetAppsPanel;
           })
+      }
+      .width('100%')
 
-        Button(this.daemonEnabled ? '暂停' : '开启')
-          .height(34)
-          .padding({ left: 14, right: 14 })
-          .fontSize(13)
-          .fontWeight(FontWeight.Medium)
-          .backgroundColor(this.daemonEnabled ? '#ED7B2F' : '#00A870')
+      if (this.showTargetAppsPanel) {
+        // 模式切换行
+        Row({ space: 6 }) {
+          Button('🎯 仅目标应用 (推荐·防误触)')
+            .layoutWeight(1)
+            .height(30)
+            .fontSize(11)
+            .fontWeight(this.targetConfig.mode === 'TARGETS_ONLY' ? FontWeight.Bold : FontWeight.Normal)
+            .backgroundColor(this.targetConfig.mode === 'TARGETS_ONLY' ? '#007F54' : '#F1F3F5')
+            .fontColor(this.targetConfig.mode === 'TARGETS_ONLY' ? '#FFFFFF' : '#182431')
+            .onClick(() => {
+              this.setSkipMode('TARGETS_ONLY');
+            })
+
+          Button('🌐 全部应用 (全局扫描)')
+            .layoutWeight(1)
+            .height(30)
+            .fontSize(11)
+            .fontWeight(this.targetConfig.mode === 'ALL' ? FontWeight.Bold : FontWeight.Normal)
+            .backgroundColor(this.targetConfig.mode === 'ALL' ? '#0052D9' : '#F1F3F5')
+            .fontColor(this.targetConfig.mode === 'ALL' ? '#FFFFFF' : '#182431')
+            .onClick(() => {
+              this.setSkipMode('ALL');
+            })
+        }
+        .width('100%')
+
+        // 提示文本
+        Text(this.targetConfig.mode === 'TARGETS_ONLY'
+          ? '💡 仅目标模式：仅对下方列表中开启的应用执行广告检测与跳过；其他无广告应用彻底放行，杜绝一切误触与耗电。'
+          : '⚠️ 全局模式：对打开的所有应用均执行开屏广告探针，容易在无广告应用首页引发误触，不建议日常开启。')
+          .fontSize(10)
+          .fontColor(this.targetConfig.mode === 'TARGETS_ONLY' ? '#007F54' : '#ED7B2F')
+          .width('100%')
+
+        // 手动添加应用表单
+        Row({ space: 6 }) {
+          TextInput({ placeholder: '应用名 (例: 夸克)', text: this.newAppName })
+            .layoutWeight(1)
+            .height(32)
+            .fontSize(11)
+            .onChange((val: string) => {
+              this.newAppName = val;
+            })
+
+          TextInput({ placeholder: '包名 (例: com.quark.browser)', text: this.newAppBundle })
+            .layoutWeight(1.4)
+            .height(32)
+            .fontSize(11)
+            .onChange((val: string) => {
+              this.newAppBundle = val;
+            })
+
+          Button('➕ 添加')
+            .height(32)
+            .fontSize(11)
+            .backgroundColor('#7A3E9D')
+            .onClick(() => {
+              this.addCustomTargetApp();
+            })
+        }
+        .width('100%')
+
+        // 快捷操作行
+        Row({ space: 8 }) {
+          Text(`目标应用 (${this.targetConfig.apps.length})`)
+            .fontSize(11)
+            .fontWeight(FontWeight.Medium)
+            .fontColor('#4E5969')
+            .layoutWeight(1)
+
+          Text('全选')
+            .fontSize(11)
+            .fontColor('#0052D9')
+            .onClick(() => {
+              this.batchToggleAllTargetApps(true);
+            })
+
+          Text('全不选')
+            .fontSize(11)
+            .fontColor('#888888')
+            .onClick(() => {
+              this.batchToggleAllTargetApps(false);
+            })
+
+          Text('重置预置')
+            .fontSize(11)
+            .fontColor('#E34D59')
+            .onClick(() => {
+              this.resetTargetAppsToDefault();
+            })
+        }
+        .width('100%')
+
+        // 目标应用滚动列表 (高度固定在 150vp)
+        List({ space: 4 }) {
+          ForEach(this.targetConfig.apps, (item: TargetAppItem) => {
+            ListItem() {
+              Row() {
+                Column({ space: 2 }) {
+                  Row({ space: 4 }) {
+                    Text(item.name)
+                      .fontSize(12)
+                      .fontWeight(FontWeight.Bold)
+                      .fontColor('#182431')
+                    if (item.isCustom) {
+                      Text('自定义')
+                        .fontSize(9)
+                        .fontColor('#7A3E9D')
+                        .backgroundColor('#F3E8FF')
+                        .padding({ left: 4, right: 4, top: 1, bottom: 1 })
+                        .borderRadius(3)
+                    }
+                  }
+                  Text(item.bundleName)
+                    .fontSize(10)
+                    .fontColor('#888888')
+                    .maxLines(1)
+                    .textOverflow({ overflow: TextOverflow.Ellipsis })
+                  if (item.probeRule) {
+                    if (item.probeRule.strategy === 'PROBE') {
+                      Text(`⏱️ 坐标探针: ${item.probeRule.delayMs}ms · (${item.probeRule.coordX},${item.probeRule.coordY}) · ${item.probeRule.repeatTimes || 4}次`)
+                        .fontSize(9)
+                        .fontColor('#0052D9')
+                    } else if (item.probeRule.strategy === 'AUTO_PROBE') {
+                      Text(`⚡ 自动+探针: ${item.probeRule.delayMs}ms · (${item.probeRule.coordX},${item.probeRule.coordY}) · ${item.probeRule.repeatTimes || 4}次`)
+                        .fontSize(9)
+                        .fontColor('#7A3E9D')
+                    } else if (item.probeRule.strategy === 'DISABLED') {
+                      Text('🚫 保持关闭')
+                        .fontSize(9)
+                        .fontColor('#888888')
+                    } else {
+                      Text('🎯 默认自动跳过')
+                        .fontSize(9)
+                        .fontColor('#00A870')
+                    }
+                  } else {
+                    Text('🎯 默认自动跳过')
+                      .fontSize(9)
+                      .fontColor('#00A870')
+                  }
+                }
+                .alignItems(HorizontalAlign.Start)
+                .layoutWeight(1)
+
+                Button(item.probeRule?.strategy === 'PROBE' ? '⏱️' : (item.probeRule?.strategy === 'AUTO_PROBE' ? '⚡' : '⚙️'))
+                  .height(24)
+                  .width(32)
+                  .fontSize(11)
+                  .backgroundColor('#EBF3FF')
+                  .fontColor('#0052D9')
+                  .margin({ right: 6 })
+                  .onClick(() => {
+                    this.openProbeRuleEditor(item);
+                  })
+
+                if (item.isCustom) {
+                  Button('🗑️')
+                    .height(24)
+                    .width(28)
+                    .fontSize(10)
+                    .backgroundColor('#FDECEE')
+                    .fontColor('#E34D59')
+                    .margin({ right: 6 })
+                    .onClick(() => {
+                      this.removeTargetApp(item.bundleName);
+                    })
+                }
+
+                Toggle({ type: ToggleType.Switch, isOn: item.enabled })
+                  .selectedColor('#00A870')
+                  .switchPointColor('#FFFFFF')
+                  .onChange((isOn: boolean) => {
+                    this.toggleTargetApp(item.bundleName, isOn);
+                  })
+              }
+              .width('100%')
+              .padding({ left: 8, right: 8, top: 6, bottom: 6 })
+              .backgroundColor('#FFFFFF')
+              .borderRadius(6)
+            }
+          }, (item: TargetAppItem) => `${item.bundleName}_${item.enabled}_${item.probeRule?.strategy}_${item.probeRule?.delayMs}_${item.probeRule?.coordX}_${item.probeRule?.coordY}_${item.probeRule?.repeatTimes}`)
+        }
+        .width('100%')
+        .height(150)
+        .padding(4)
+        .backgroundColor('#E5E8EB')
+        .borderRadius(8)
+
+        // ⏱️ 自绘/无障碍失明应用探针参数调节弹层 (支持滚动，防止顶出屏幕)
+        if (this.editingProbeApp) {
+          Scroll() {
+            Column({ space: 8 }) {
+              Row() {
+                Text(`⚙️ 配置【${this.editingProbeApp.name}】跳过方式`)
+                  .fontSize(12)
+                  .fontWeight(FontWeight.Bold)
+                  .fontColor('#0052D9')
+                  .layoutWeight(1)
+
+                Text('✕ 关闭')
+                  .fontSize(11)
+                  .fontColor('#888888')
+                  .onClick(() => {
+                    this.editingProbeApp = null;
+                  })
+              }
+              .width('100%')
+
+              Text('提示: 默认自动可秒跳大多数App；腾讯视频等自绘应用推荐选「坐标探针」。')
+                .fontSize(10)
+                .fontColor('#666666')
+
+              // 模式切换单选按钮组
+              Text('选择跳过方式:')
+                .fontSize(11)
+                .fontWeight(FontWeight.Bold)
+                .fontColor('#182431')
+
+              Row({ space: 4 }) {
+                Button('🎯 默认自动')
+                  .height(28)
+                  .fontSize(10)
+                  .backgroundColor(this.editStrategy === 'AUTO' ? '#00A870' : '#F1F3F5')
+                  .fontColor(this.editStrategy === 'AUTO' ? '#FFFFFF' : '#182431')
+                  .layoutWeight(1)
+                  .onClick(() => {
+                    this.editStrategy = 'AUTO';
+                  })
+
+                Button('⏱️ 坐标探针')
+                  .height(28)
+                  .fontSize(10)
+                  .backgroundColor(this.editStrategy === 'PROBE' ? '#0052D9' : '#F1F3F5')
+                  .fontColor(this.editStrategy === 'PROBE' ? '#FFFFFF' : '#182431')
+                  .layoutWeight(1)
+                  .onClick(() => {
+                    this.editStrategy = 'PROBE';
+                  })
+
+                Button('⚡ 自动+兜底')
+                  .height(28)
+                  .fontSize(10)
+                  .backgroundColor(this.editStrategy === 'AUTO_PROBE' ? '#7A3E9D' : '#F1F3F5')
+                  .fontColor(this.editStrategy === 'AUTO_PROBE' ? '#FFFFFF' : '#182431')
+                  .layoutWeight(1)
+                  .onClick(() => {
+                    this.editStrategy = 'AUTO_PROBE';
+                  })
+
+                Button('🚫 关闭')
+                  .height(28)
+                  .fontSize(10)
+                  .backgroundColor(this.editStrategy === 'DISABLED' ? '#E34D59' : '#F1F3F5')
+                  .fontColor(this.editStrategy === 'DISABLED' ? '#FFFFFF' : '#182431')
+                  .layoutWeight(0.8)
+                  .onClick(() => {
+                    this.editStrategy = 'DISABLED';
+                  })
+              }
+              .width('100%')
+
+              if (this.editStrategy !== 'DISABLED') {
+                Row({ space: 6 }) {
+                  Text('初始延迟(ms):')
+                    .fontSize(11)
+                    .fontColor('#182431')
+                    .width(85)
+                  TextInput({ text: this.editDelayMs })
+                    .layoutWeight(1)
+                    .height(30)
+                    .fontSize(11)
+                    .type(InputType.Number)
+                    .onChange((val: string) => {
+                      this.editDelayMs = val;
+                    })
+
+                  Text('重复检测次数:')
+                    .fontSize(11)
+                    .fontColor('#182431')
+                    .width(80)
+                  TextInput({ text: this.editRepeatTimes })
+                    .width(50)
+                    .height(30)
+                    .fontSize(11)
+                    .type(InputType.Number)
+                    .onChange((val: string) => {
+                      this.editRepeatTimes = val;
+                    })
+                }
+                .width('100%')
+
+                Row({ space: 6 }) {
+                  Text('点击 X 坐标:')
+                    .fontSize(11)
+                    .fontColor('#182431')
+                    .width(85)
+                  TextInput({ text: this.editCoordX })
+                    .layoutWeight(1)
+                    .height(30)
+                    .fontSize(11)
+                    .type(InputType.Number)
+                    .onChange((val: string) => {
+                      this.editCoordX = val;
+                    })
+
+                  Text('Y 坐标:')
+                    .fontSize(11)
+                    .fontColor('#182431')
+                    .width(45)
+                  TextInput({ text: this.editCoordY })
+                    .layoutWeight(1)
+                    .height(30)
+                    .fontSize(11)
+                    .type(InputType.Number)
+                    .onChange((val: string) => {
+                      this.editCoordY = val;
+                    })
+                }
+                .width('100%')
+              }
+
+              Row({ space: 8 }) {
+                Button('推荐自绘(200ms/1135,185/4次)')
+                  .height(28)
+                  .fontSize(10)
+                  .backgroundColor('#F1F3F5')
+                  .fontColor('#0052D9')
+                  .layoutWeight(1)
+                  .onClick(() => {
+                    this.editStrategy = 'PROBE';
+                    this.editDelayMs = '200';
+                    this.editCoordX = '1135';
+                    this.editCoordY = '185';
+                    this.editRepeatTimes = '4';
+                  })
+
+                Button('💾 保存并应用')
+                  .height(28)
+                  .fontSize(11)
+                  .backgroundColor('#0052D9')
+                  .fontColor('#FFFFFF')
+                  .padding({ left: 12, right: 12 })
+                  .onClick(() => {
+                    this.saveCurrentProbeRule();
+                  })
+              }
+              .width('100%')
+            }
+            .width('100%')
+          }
+          .width('100%')
+          .height(190)
+          .scrollBar(BarState.Auto)
+          .padding(10)
+          .backgroundColor('#F0F4FF')
+          .borderRadius(8)
+          .border({ width: 1, color: '#B8D3FE' })
+        }
+      }
+    }
+    .width('100%')
+    .padding(10)
+    .backgroundColor('#F8F9FA')
+    .borderRadius(10)
+    .border({ width: 1, color: '#E5E8EB' })
+  }
+
+  /**
+   * 视图 1：⚡ 开屏广告自动点击跳过
+   */
+  @Builder
+  buildAutoSkipPage() {
+    Scroll() {
+      Column({ space: 10 }) {
+        // 状态统计卡片
+        Row() {
+          Column({ space: 4 }) {
+            Text(this.daemonEnabled ? '已启用' : '已暂停')
+              .fontSize(16)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.daemonEnabled ? '#00A870' : '#ED7B2F')
+            Text(this.daemonRunning ? `守护运行中${this.daemonPid > 0 ? ' · PID ' + this.daemonPid : ''}` : '跳过服务状态')
+              .fontSize(11)
+              .fontColor('#666666')
+          }
+          .layoutWeight(1)
+
+          Column({ space: 4 }) {
+            Text(`${this.skippedCount}`)
+              .fontSize(18)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#7A3E9D')
+            Text('累计跳过 (次)')
+              .fontSize(11)
+              .fontColor('#666666')
+          }
+          .layoutWeight(1)
+
+          Column({ space: 4 }) {
+            Text('智能触控')
+              .fontSize(15)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#0052D9')
+            Text('跳过控件识别')
+              .fontSize(11)
+              .fontColor('#666666')
+          }
+          .layoutWeight(1)
+        }
+        .width('100%')
+        .padding(12)
+        .backgroundColor('#F1F3F5')
+        .borderRadius(10)
+
+        // 核心开关与一键重启卡片
+        Row({ space: 8 }) {
+          Column({ space: 3 }) {
+            Text(this.daemonEnabled ? '⚡ 全场景广告自动跳过已开启 (含Resume/切回秒跳)' : '⏸️ 广告自动跳过已暂停')
+              .fontSize(14)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#182431')
+            Text(this.daemonEnabled ? '已增强支持冷热启动、后台Resume切回与锁屏亮屏广告秒跳。若失效可点「重启」' : '当前已暂停自动跳过，点击右侧「开启」即可恢复并重置引擎')
+              .fontSize(11)
+              .fontColor('#666666')
+          }
+          .alignItems(HorizontalAlign.Start)
+          .layoutWeight(1)
           .onClick(() => {
             this.toggleLocalSkipDaemon();
           })
+
+          Button('🔄 重启')
+            .height(34)
+            .padding({ left: 12, right: 12 })
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .backgroundColor('#0052D9')
+            .onClick(() => {
+              this.syncLocalSkipDaemon('/restart');
+            })
+
+          Button(this.daemonEnabled ? '暂停' : '开启')
+            .height(34)
+            .padding({ left: 14, right: 14 })
+            .fontSize(13)
+            .fontWeight(FontWeight.Medium)
+            .backgroundColor(this.daemonEnabled ? '#ED7B2F' : '#00A870')
+            .onClick(() => {
+              this.toggleLocalSkipDaemon();
+            })
+        }
+        .width('100%')
+        .padding({ left: 14, right: 14, top: 10, bottom: 10 })
+        .backgroundColor(this.daemonEnabled ? '#EBF9F3' : '#FFF6ED')
+        .borderRadius(10)
+        .border({
+          width: 1,
+          color: this.daemonEnabled ? '#B8EBD6' : '#FAD9B8'
+        })
+
+        // 🎯 目标应用过滤与管理卡片
+        this.buildTargetAppsCard()
+
+        // 日志操作栏
+        Row({ space: 8 }) {
+          Text('实时跳过记录')
+            .fontSize(12)
+            .fontWeight(FontWeight.Medium)
+            .fontColor('#4E5969')
+            .layoutWeight(1)
+
+          Button('🔄 刷新')
+            .height(30)
+            .fontSize(11)
+            .backgroundColor('#0052D9')
+            .onClick(() => {
+              this.syncLocalSkipDaemon('/status');
+              this.reloadSkipLogs();
+            })
+
+          Button('🗑️ 清空')
+            .height(30)
+            .fontSize(11)
+            .backgroundColor('#888888')
+            .onClick(() => {
+              this.clearSkipLogs();
+            })
+        }
+        .width('100%')
+
+        // 自动跳过实时日志面板
+        List({ space: 6, scroller: this.skipScroller }) {
+          ForEach(this.skipLogs, (item: string, index: number) => {
+            ListItem() {
+              Text(item)
+                .fontSize(11)
+                .fontFamily('monospace')
+                .width('100%')
+                .padding(8)
+                .backgroundColor(
+                  item.includes('[SKIP]') ? '#F3E8FF' :
+                  item.includes('[SKIP-SVC]') ? '#E6F7F0' : '#FFFFFF'
+                )
+                .borderRadius(6)
+                .fontColor(
+                  item.includes('[SKIP]') ? '#7A3E9D' :
+                  item.includes('[SKIP-SVC]') ? '#007F54' : '#182431'
+                )
+            }
+          }, (item: string, index: number) => `skip_${index}_${item}`)
+        }
+        .width('100%')
+        .height(220)
+        .padding(8)
+        .backgroundColor('#F1F3F5')
+        .borderRadius(10)
       }
       .width('100%')
-      .padding({ left: 14, right: 14, top: 10, bottom: 10 })
-      .backgroundColor(this.daemonEnabled ? '#EBF9F3' : '#FFF6ED')
-      .borderRadius(10)
-      .border({
-        width: 1,
-        color: this.daemonEnabled ? '#B8EBD6' : '#FAD9B8'
-      })
-
-      // 日志操作栏
-      Row({ space: 8 }) {
-        Text('实时跳过记录')
-          .fontSize(12)
-          .fontWeight(FontWeight.Medium)
-          .fontColor('#4E5969')
-          .layoutWeight(1)
-
-        Button('🔄 刷新')
-          .height(30)
-          .fontSize(11)
-          .backgroundColor('#0052D9')
-          .onClick(() => {
-            this.syncLocalSkipDaemon('/status');
-            this.reloadSkipLogs();
-          })
-
-        Button('🗑️ 清空')
-          .height(30)
-          .fontSize(11)
-          .backgroundColor('#888888')
-          .onClick(() => {
-            this.clearSkipLogs();
-          })
-      }
-      .width('100%')
-
-      // 自动跳过实时日志面板
-      List({ space: 6, scroller: this.skipScroller }) {
-        ForEach(this.skipLogs, (item: string, index: number) => {
-          ListItem() {
-            Text(item)
-              .fontSize(11)
-              .fontFamily('monospace')
-              .width('100%')
-              .padding(8)
-              .backgroundColor(
-                item.includes('[SKIP]') ? '#F3E8FF' :
-                item.includes('[SKIP-SVC]') ? '#E6F7F0' : '#FFFFFF'
-              )
-              .borderRadius(6)
-              .fontColor(
-                item.includes('[SKIP]') ? '#7A3E9D' :
-                item.includes('[SKIP-SVC]') ? '#007F54' : '#182431'
-              )
-          }
-        }, (item: string, index: number) => `skip_${index}_${item}`)
-      }
-      .width('100%')
-      .layoutWeight(1)
-      .padding(8)
-      .backgroundColor('#F1F3F5')
-      .borderRadius(10)
     }
     .width('100%')
     .layoutWeight(1)
+    .scrollBar(BarState.Auto)
+    .edgeEffect(EdgeEffect.Spring)
   }
 
   /**
@@ -627,259 +1182,264 @@ struct Index {
    */
   @Builder
   buildVpnFilterPage() {
-    Column({ space: 8 }) {
-      // VPN 状态卡片
-      Row() {
-        Column({ space: 2 }) {
-          Text(this.vpnRunning ? '运行中' : '未启动')
-            .fontSize(15)
-            .fontWeight(FontWeight.Bold)
-            .fontColor(this.vpnRunning ? '#00A870' : '#E34D59')
-          Text('VPN 状态')
-            .fontSize(11)
-            .fontColor('#666666')
-        }
-        .layoutWeight(1)
-
-        Column({ space: 2 }) {
-          Text(`${this.blockedCount}`)
-            .fontSize(15)
-            .fontWeight(FontWeight.Bold)
-            .fontColor('#00A870')
-          Text('DNS拦截')
-            .fontSize(11)
-            .fontColor('#666666')
-        }
-        .layoutWeight(1)
-
-        Column({ space: 2 }) {
-          Text(`${this.watchCount}`)
-            .fontSize(15)
-            .fontWeight(FontWeight.Bold)
-            .fontColor('#ED7B2F')
-          Text('可疑监控')
-            .fontSize(11)
-            .fontColor('#666666')
-        }
-        .layoutWeight(1)
-
-        Column({ space: 2 }) {
-          Text(`${this.ruleCount}`)
-            .fontSize(15)
-            .fontWeight(FontWeight.Bold)
-            .fontColor('#0052D9')
-          Text('黑名单规则')
-            .fontSize(11)
-            .fontColor('#666666')
-        }
-        .layoutWeight(1)
-      }
-      .width('100%')
-      .padding(10)
-      .backgroundColor('#F1F3F5')
-      .borderRadius(10)
-
-      // 核心操作栏：启动/停止 VPN + 刷新/清空日志
-      Row({ space: 8 }) {
-        Button(this.vpnRunning ? '🔄 重启 VPN' : '🛡️ 启动本地 VPN')
-          .layoutWeight(1)
-          .height(38)
-          .fontSize(13)
-          .backgroundColor('#0052D9')
-          .onClick(() => {
-            this.startVpn();
-          })
-
-        Button('停止 VPN')
-          .width(84)
-          .height(38)
-          .fontSize(13)
-          .backgroundColor('#E34D59')
-          .onClick(() => {
-            this.stopVpn();
-          })
-
-        Button('刷新')
-          .width(60)
-          .height(38)
-          .fontSize(12)
-          .backgroundColor('#4E5969')
-          .onClick(() => {
-            this.reloadVpnLogs();
-            this.sendVpnCommand('STATUS');
-          })
-
-        Button('清空')
-          .width(60)
-          .height(38)
-          .fontSize(12)
-          .backgroundColor('#888888')
-          .onClick(() => {
-            this.clearVpnLogs();
-          })
-      }
-      .width('100%')
-
-      // 添加自定义广告域名
-      Row({ space: 8 }) {
-        TextInput({ placeholder: '输入或点击下方日志提取要拉黑的域名', text: this.customDomain })
-          .layoutWeight(1)
-          .height(36)
-          .fontSize(12)
-          .onChange((val: string) => {
-            this.customDomain = val;
-          })
-
-        Button('拉黑并热生效')
-          .height(36)
-          .fontSize(12)
-          .backgroundColor('#ED7B2F')
-          .onClick(() => {
-            const target = this.customDomain.trim();
-            if (target.length > 0) {
-              const context = getContext(this) as common.UIAbilityContext;
-              AdDomainRules.addRule(target, context.filesDir);
-              this.ruleCount = AdDomainRules.getAllRules().length;
-              this.sendVpnCommand('RELOAD_RULES');
-              this.appendVpnLog(`[RULE] 已持久化拉黑域名并通知 VPN 进程热生效: ${target}`);
-              this.customDomain = '';
-            }
-          })
-      }
-      .width('100%')
-
-      // 特殊应用调试折叠入口
-      Column({ space: 6 }) {
+    Scroll() {
+      Column({ space: 8 }) {
+        // VPN 状态卡片
         Row() {
-          Text('🔧 特殊应用调试')
-            .fontSize(12)
-            .fontWeight(FontWeight.Medium)
-            .fontColor('#4E5969')
-            .layoutWeight(1)
+          Column({ space: 2 }) {
+            Text(this.vpnRunning ? '运行中' : '未启动')
+              .fontSize(15)
+              .fontWeight(FontWeight.Bold)
+              .fontColor(this.vpnRunning ? '#00A870' : '#E34D59')
+            Text('VPN 状态')
+              .fontSize(11)
+              .fontColor('#666666')
+          }
+          .layoutWeight(1)
 
-          Text(this.showSpecialDebug ? '收起 ▲' : '展开 ▼')
-            .fontSize(11)
-            .fontColor('#0052D9')
+          Column({ space: 2 }) {
+            Text(`${this.blockedCount}`)
+              .fontSize(15)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#00A870')
+            Text('DNS拦截')
+              .fontSize(11)
+              .fontColor('#666666')
+          }
+          .layoutWeight(1)
+
+          Column({ space: 2 }) {
+            Text(`${this.watchCount}`)
+              .fontSize(15)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#ED7B2F')
+            Text('可疑监控')
+              .fontSize(11)
+              .fontColor('#666666')
+          }
+          .layoutWeight(1)
+
+          Column({ space: 2 }) {
+            Text(`${this.ruleCount}`)
+              .fontSize(15)
+              .fontWeight(FontWeight.Bold)
+              .fontColor('#0052D9')
+            Text('黑名单规则')
+              .fontSize(11)
+              .fontColor('#666666')
+          }
+          .layoutWeight(1)
         }
         .width('100%')
-        .padding({ left: 10, right: 10, top: 7, bottom: 7 })
-        .backgroundColor('#F7F8FA')
-        .borderRadius(8)
-        .onClick(() => {
-          this.showSpecialDebug = !this.showSpecialDebug;
-        })
+        .padding(10)
+        .backgroundColor('#F1F3F5')
+        .borderRadius(10)
 
-        if (this.showSpecialDebug) {
-          Row({ space: 8 }) {
-            Button('🧪 广告域名 DNS 拦截自检')
-              .layoutWeight(1)
-              .height(34)
-              .fontSize(12)
-              .backgroundColor('#00A870')
-              .onClick(() => {
-                this.testSampleAdDnsResolution();
-              })
+        // 核心操作栏：启动/停止 VPN + 刷新/清空日志
+        Row({ space: 8 }) {
+          Button(this.vpnRunning ? '🔄 重启 VPN' : '🛡️ 启动本地 VPN')
+            .layoutWeight(1)
+            .height(38)
+            .fontSize(13)
+            .backgroundColor('#0052D9')
+            .onClick(() => {
+              this.startVpn();
+            })
 
-            Button('📌 插入应用抓包标记并保活')
-              .layoutWeight(1)
-              .height(34)
+          Button('停止 VPN')
+            .width(84)
+            .height(38)
+            .fontSize(13)
+            .backgroundColor('#E34D59')
+            .onClick(() => {
+              this.stopVpn();
+            })
+
+          Button('刷新')
+            .width(60)
+            .height(38)
+            .fontSize(12)
+            .backgroundColor('#4E5969')
+            .onClick(() => {
+              this.reloadVpnLogs();
+              this.sendVpnCommand('STATUS');
+            })
+
+          Button('清空')
+            .width(60)
+            .height(38)
+            .fontSize(12)
+            .backgroundColor('#888888')
+            .onClick(() => {
+              this.clearVpnLogs();
+            })
+        }
+        .width('100%')
+
+        // 添加自定义广告域名
+        Row({ space: 8 }) {
+          TextInput({ placeholder: '输入或点击下方日志提取要拉黑的域名', text: this.customDomain })
+            .layoutWeight(1)
+            .height(36)
+            .fontSize(12)
+            .onChange((val: string) => {
+              this.customDomain = val;
+            })
+
+          Button('拉黑并热生效')
+            .height(36)
+            .fontSize(12)
+            .backgroundColor('#ED7B2F')
+            .onClick(() => {
+              const target = this.customDomain.trim();
+              if (target.length > 0) {
+                const context = getContext(this) as common.UIAbilityContext;
+                AdDomainRules.addRule(target, context.filesDir);
+                this.ruleCount = AdDomainRules.getAllRules().length;
+                this.sendVpnCommand('RELOAD_RULES');
+                this.appendVpnLog(`[RULE] 已持久化拉黑域名并通知 VPN 进程热生效: ${target}`);
+                this.customDomain = '';
+              }
+            })
+        }
+        .width('100%')
+
+        // 特殊应用调试折叠入口
+        Column({ space: 6 }) {
+          Row() {
+            Text('🔧 特殊应用调试')
               .fontSize(12)
-              .backgroundColor('#7A3E9D')
-              .onClick(async () => {
-                await this.startVpn();
-                this.sendVpnCommand('MARK:>>> 准备切往目标应用抓包 <<<');
-                this.appendVpnLog('[MARK] ========== 已保活VPN并插入目标应用抓包标记 ==========');
-              })
+              .fontWeight(FontWeight.Medium)
+              .fontColor('#4E5969')
+              .layoutWeight(1)
+
+            Text(this.showSpecialDebug ? '收起 ▲' : '展开 ▼')
+              .fontSize(11)
+              .fontColor('#0052D9')
           }
           .width('100%')
-          .padding({ left: 4, right: 4, bottom: 2 })
-        }
-      }
-      .width('100%')
-
-      // 日志分类筛选栏
-      Row({ space: 6 }) {
-        Button(`全部(${this.vpnLogs.length})`)
-          .layoutWeight(1)
-          .height(30)
-          .fontSize(11)
-          .backgroundColor(this.filterMode === 'ALL' ? '#182431' : '#E5E8EB')
-          .fontColor(this.filterMode === 'ALL' ? '#FFFFFF' : '#182431')
+          .padding({ left: 10, right: 10, top: 7, bottom: 7 })
+          .backgroundColor('#F7F8FA')
+          .borderRadius(8)
           .onClick(() => {
-            this.filterMode = 'ALL';
+            this.showSpecialDebug = !this.showSpecialDebug;
           })
 
-        Button(`🎯拦截(${this.blockedCount})`)
-          .layoutWeight(1)
-          .height(30)
-          .fontSize(11)
-          .backgroundColor(this.filterMode === 'BLOCK' ? '#00A870' : '#E5E8EB')
-          .fontColor(this.filterMode === 'BLOCK' ? '#FFFFFF' : '#182431')
-          .onClick(() => {
-            this.filterMode = 'BLOCK';
-          })
+          if (this.showSpecialDebug) {
+            Row({ space: 8 }) {
+              Button('🧪 广告域名 DNS 拦截自检')
+                .layoutWeight(1)
+                .height(34)
+                .fontSize(12)
+                .backgroundColor('#00A870')
+                .onClick(() => {
+                  this.testSampleAdDnsResolution();
+                })
 
-        Button(`🔍可疑监控(${this.watchCount})`)
-          .layoutWeight(1)
-          .height(30)
-          .fontSize(11)
-          .backgroundColor(this.filterMode === 'WATCH' ? '#ED7B2F' : '#E5E8EB')
-          .fontColor(this.filterMode === 'WATCH' ? '#FFFFFF' : '#182431')
-          .onClick(() => {
-            this.filterMode = 'WATCH';
-          })
-
-        Button(`🟢放行(${this.allowedCount})`)
-          .layoutWeight(1)
-          .height(30)
-          .fontSize(11)
-          .backgroundColor(this.filterMode === 'ALLOW' ? '#0052D9' : '#E5E8EB')
-          .fontColor(this.filterMode === 'ALLOW' ? '#FFFFFF' : '#182431')
-          .onClick(() => {
-            this.filterMode = 'ALLOW';
-          })
-      }
-      .width('100%')
-
-      // VPN 实时日志面板
-      List({ space: 6, scroller: this.vpnScroller }) {
-        ForEach(this.getFilteredVpnLogs(), (item: string, index: number) => {
-          ListItem() {
-            Text(item)
-              .fontSize(11)
-              .fontFamily('monospace')
-              .width('100%')
-              .padding(6)
-              .backgroundColor(
-                item.includes('[MARK]') ? '#F3E8FF' :
-                item.includes('[BLOCK]') || item.includes('✅') ? '#E6F7F0' :
-                item.includes('[WATCH]') ? '#FFF4E8' :
-                item.includes('[ERROR]') ? '#FDECEE' : '#FFFFFF'
-              )
-              .borderRadius(6)
-              .fontColor(
-                item.includes('[ERROR]') || item.includes('❌') ? '#E34D59' :
-                item.includes('[MARK]') ? '#7A3E9D' :
-                item.includes('[BLOCK]') || item.includes('✅') ? '#007F54' :
-                item.includes('[WATCH]') ? '#C65911' : '#182431'
-              )
-              .onClick(() => {
-                const domain = this.extractDomainFromLogLine(item);
-                if (domain) {
-                  this.customDomain = domain;
-                }
-              })
+              Button('📌 插入应用抓包标记并保活')
+                .layoutWeight(1)
+                .height(34)
+                .fontSize(12)
+                .backgroundColor('#7A3E9D')
+                .onClick(async () => {
+                  await this.startVpn();
+                  this.sendVpnCommand('MARK:>>> 准备切往目标应用抓包 <<<');
+                  this.appendVpnLog('[MARK] ========== 已保活VPN并插入目标应用抓包标记 ==========');
+                })
+            }
+            .width('100%')
+            .padding({ left: 4, right: 4, bottom: 2 })
           }
-        }, (item: string, index: number) => `vpn_${index}_${item}`)
+        }
+        .width('100%')
+
+        // 日志分类筛选栏
+        Row({ space: 6 }) {
+          Button(`全部(${this.vpnLogs.length})`)
+            .layoutWeight(1)
+            .height(30)
+            .fontSize(11)
+            .backgroundColor(this.filterMode === 'ALL' ? '#182431' : '#E5E8EB')
+            .fontColor(this.filterMode === 'ALL' ? '#FFFFFF' : '#182431')
+            .onClick(() => {
+              this.filterMode = 'ALL';
+            })
+
+          Button(`🎯拦截(${this.blockedCount})`)
+            .layoutWeight(1)
+            .height(30)
+            .fontSize(11)
+            .backgroundColor(this.filterMode === 'BLOCK' ? '#00A870' : '#E5E8EB')
+            .fontColor(this.filterMode === 'BLOCK' ? '#FFFFFF' : '#182431')
+            .onClick(() => {
+              this.filterMode = 'BLOCK';
+            })
+
+          Button(`🔍可疑监控(${this.watchCount})`)
+            .layoutWeight(1)
+            .height(30)
+            .fontSize(11)
+            .backgroundColor(this.filterMode === 'WATCH' ? '#ED7B2F' : '#E5E8EB')
+            .fontColor(this.filterMode === 'WATCH' ? '#FFFFFF' : '#182431')
+            .onClick(() => {
+              this.filterMode = 'WATCH';
+            })
+
+          Button(`🟢放行(${this.allowedCount})`)
+            .layoutWeight(1)
+            .height(30)
+            .fontSize(11)
+            .backgroundColor(this.filterMode === 'ALLOW' ? '#0052D9' : '#E5E8EB')
+            .fontColor(this.filterMode === 'ALLOW' ? '#FFFFFF' : '#182431')
+            .onClick(() => {
+              this.filterMode = 'ALLOW';
+            })
+        }
+        .width('100%')
+
+        // VPN 实时日志面板
+        List({ space: 6, scroller: this.vpnScroller }) {
+          ForEach(this.getFilteredVpnLogs(), (item: string, index: number) => {
+            ListItem() {
+              Text(item)
+                .fontSize(11)
+                .fontFamily('monospace')
+                .width('100%')
+                .padding(6)
+                .backgroundColor(
+                  item.includes('[MARK]') ? '#F3E8FF' :
+                  item.includes('[BLOCK]') || item.includes('✅') ? '#E6F7F0' :
+                  item.includes('[WATCH]') ? '#FFF4E8' :
+                  item.includes('[ERROR]') ? '#FDECEE' : '#FFFFFF'
+                )
+                .borderRadius(6)
+                .fontColor(
+                  item.includes('[ERROR]') || item.includes('❌') ? '#E34D59' :
+                  item.includes('[MARK]') ? '#7A3E9D' :
+                  item.includes('[BLOCK]') || item.includes('✅') ? '#007F54' :
+                  item.includes('[WATCH]') ? '#C65911' : '#182431'
+                )
+                .onClick(() => {
+                  const domain = this.extractDomainFromLogLine(item);
+                  if (domain) {
+                    this.customDomain = domain;
+                  }
+                })
+            }
+          }, (item: string, index: number) => `vpn_${index}_${item}`)
+        }
+        .width('100%')
+        .height(240)
+        .padding(8)
+        .backgroundColor('#F1F3F5')
+        .borderRadius(10)
       }
       .width('100%')
-      .layoutWeight(1)
-      .padding(8)
-      .backgroundColor('#F1F3F5')
-      .borderRadius(10)
     }
     .width('100%')
     .layoutWeight(1)
+    .scrollBar(BarState.Auto)
+    .edgeEffect(EdgeEffect.Spring)
   }
 
   build() {

@@ -24,12 +24,97 @@ PID_FILE="/data/local/tmp/adskip_daemon.pid"
 WD_PID_FILE="/data/local/tmp/adskip_watchdog.pid"
 STOP_FILE="/data/local/tmp/adskip_daemon.stop"
 HISTORY_LOG="/data/local/tmp/adskip_history.log"
+TARGETS_FILE="/data/local/tmp/adskip_targets.txt"
+MODE_FILE="/data/local/tmp/adskip_mode.txt"
+PROBE_CONFIG_FILE="/data/local/tmp/adskip_probe_config.txt"
 
 APP_FILES_DIR="/data/app/el2/100/base/com.ysydhc.adskipvpn/haps/entry/files"
 APP_CTRL_FILE="$APP_FILES_DIR/adskip_control.txt"
 APP_STATUS_FILE="$APP_FILES_DIR/adskip_status.json"
 APP_SKIP_LOG="$APP_FILES_DIR/adskip_skip.log"
 APP_SCRIPT_FILE="$APP_FILES_DIR/adskip_daemon.sh"
+APP_TARGETS_FILE="$APP_FILES_DIR/adskip_targets.txt"
+APP_MODE_FILE="$APP_FILES_DIR/adskip_mode.txt"
+APP_PROBE_CONFIG_FILE="$APP_FILES_DIR/adskip_probe_config.txt"
+
+# 辅助函数：将毫秒格式化为秒数浮点串 (例如 1600 -> 1.600, 500 -> 0.500)
+format_ms_to_sec() {
+  _ms="$1"
+  if [ -z "$_ms" ] || [ "$_ms" -le 0 ] 2>/dev/null; then
+    echo "0"
+    return
+  fi
+  _s=$(( _ms / 1000 ))
+  _r=$(( _ms % 1000 ))
+  if [ "$_r" -lt 10 ]; then
+    _r="00$_r"
+  elif [ "$_r" -lt 100 ]; then
+    _r="0$_r"
+  fi
+  echo "${_s}.${_r}"
+}
+
+# 辅助函数：读取自绘/无障碍失明应用的定制跳过规则
+# 格式: 包名=是否启用(1/0),切入延迟(毫秒),点击X,点击Y
+# 示例: com.tencent.videohm=1,1600,1135,185
+get_probe_rule() {
+  _bundle="$1"
+  _conf=""
+  if [ -f "$APP_PROBE_CONFIG_FILE" ]; then
+    _conf=$(/bin/grep "^${_bundle}=" "$APP_PROBE_CONFIG_FILE" 2>/dev/null || true)
+  fi
+  if [ -z "$_conf" ] && [ -f "$PROBE_CONFIG_FILE" ]; then
+    _conf=$(/bin/grep "^${_bundle}=" "$PROBE_CONFIG_FILE" 2>/dev/null || true)
+  fi
+  echo "$_conf"
+}
+
+init_default_targets() {
+  if [ ! -f "$TARGETS_FILE" ] && [ ! -f "$APP_TARGETS_FILE" ]; then
+    cat << 'EOF' > "$TARGETS_FILE" 2>/dev/null || true
+com.tencent.videohm
+com.tencent.hm.qqmusic
+com.ximalaya.ting.xmharmony
+cn.samsclub.hm.app
+com.qiyi.video.hmy
+com.youku.next
+tv.danmaku.bili
+com.sina.weibo.stage
+com.zhihu.hmos
+com.ss.hm.ugc.aweme
+com.kuaishou.nebula
+com.taobao.taobao4hmos
+com.jd.harmony
+com.netease.cloudmusic
+com.xingin.xhs
+com.baidu.searchbox
+com.autonavi.minimap
+com.sankuai.meituan
+EOF
+    echo "TARGETS_ONLY" > "$MODE_FILE" 2>/dev/null || true
+  fi
+
+  # 初始化应用独立跳过规则配置文件（若不存在）
+  if [ ! -f "$PROBE_CONFIG_FILE" ] && [ ! -f "$APP_PROBE_CONFIG_FILE" ]; then
+    cat << 'EOF' > "$PROBE_CONFIG_FILE" 2>/dev/null || true
+# ============================================================================
+# 应用独立跳过策略与参数配置表
+# 每行格式: 应用包名=跳过模式(AUTO/PROBE/AUTO_PROBE/DISABLED),延迟时长(毫秒),X坐标,Y坐标,尝试次数(1-5)
+# 说明:
+# 1. AUTO: 优先走通用标准文本识别(跳过/Skip/倒计时)，95%的标准应用默认首选
+# 2. PROBE: 纯自绘无文字节点专属坐标探针(如腾讯视频默认坐标 1135,185，延迟200ms，重试4次)
+# 3. AUTO_PROBE: 自动跳过+探针兜底，双重保障
+# 4. DISABLED: 完全关闭跳过(如山姆会员店等无开屏广告应用)
+# ============================================================================
+com.tencent.videohm=PROBE,200,1135,185,4
+com.tencent.hm.qqmusic=AUTO,0,1135,185,4
+cn.samsclub.hm.app=DISABLED,0,0,0,0
+EOF
+    if [ -d "$APP_FILES_DIR" ]; then
+      /bin/cp -f "$PROBE_CONFIG_FILE" "$APP_PROBE_CONFIG_FILE" 2>/dev/null || true
+    fi
+  fi
+}
 
 # ============================================================================
 # 独立看门狗进程模式 (--watchdog)：
@@ -202,6 +287,7 @@ DUMP_COUNT_SINCE_RESET=0
 WAS_SCREEN_OFF=0
 WAS_IN_SYSTEM=0
 IS_RESUME_EVENT=0
+LAST_WINDOW_ID=""
 
 write_status_file() {
   echo "{\"running\":true,\"enabled\":$ENABLED,\"skippedCount\":$SKIP_COUNT,\"pid\":$$}" > "/data/local/tmp/adskip_status.json" 2>/dev/null || true
@@ -288,6 +374,7 @@ fi
 echo "$$:0" > "$HEARTBEAT_FILE" 2>/dev/null || true
 write_status_file
 ensure_watchdog_alive
+init_default_targets
 sync_bridge_if_listening "READY"
 
 while true; do
@@ -365,6 +452,13 @@ while true; do
   /bin/sed -n '/"bundleName":"/{/sceneboard/d;/systemui/d;s/.*"bundleName":"\([^"]*\)".*/\1/p;q;}' "$ATTRS_TXT" > "$BUNDLE_TXT" 2>/dev/null || true
   read -r CUR_BUNDLE < "$BUNDLE_TXT" 2>/dev/null || CUR_BUNDLE=""
 
+  CUR_WINDOW_ID=$(/bin/sed -n '1s/.*"hostWindowId":"\([0-9]*\)".*/\1/p' "$ATTRS_TXT" 2>/dev/null)
+  if [ -n "$CUR_WINDOW_ID" ] && [ "$CUR_WINDOW_ID" != "$LAST_WINDOW_ID" ]; then
+    LAST_WINDOW_ID="$CUR_WINDOW_ID"
+    IS_RESUME_EVENT=1
+  fi
+
+
   if [ -z "$CUR_BUNDLE" ]; then
     # 当前处于系统桌面或多任务后台选择视图：置位 WAS_IN_SYSTEM 标志
     WAS_IN_SYSTEM=1
@@ -379,7 +473,8 @@ while true; do
       /bin/killall -9 uitest >/dev/null 2>&1 || true
       DUMP_COUNT_SINCE_RESET=0
     fi
-    sleep 0.3
+    # 极速感知：将桌面轮询间隙压缩至 0.08s，确保点击图标的瞬态被光速捕捉，杜绝感知滞后
+    sleep 0.08
     continue
   fi
 
@@ -390,21 +485,50 @@ while true; do
       NO_BTN_TICKS=0
       IN_APP_TICKS=0
       SKIPPED_IN_APP=0
+      PROBE_TRIES=0
       BRIDGE_SYNC_TICKS=0
       sync_bridge_if_listening "STATUS"
       sleep 0.4
       continue
       ;;
-    com.huawei.hmos.settings)
+    com.huawei.hmos.settings|com.huawei.hmos.camera|com.huawei.hmos.photos|com.ohos.contacts|com.huawei.hmos.contacts|com.ohos.mms|com.huawei.hmos.calculator|com.huawei.hmos.calendar|com.huawei.hmos.clock|com.huawei.hmos.soundrecorder|com.huawei.hmos.notepad|com.huawei.hmos.files|com.huawei.hmos.inputmethod)
       LAST_BUNDLE="$CUR_BUNDLE"
       IN_CLICK_STREAK=0
       NO_BTN_TICKS=0
       IN_APP_TICKS=0
       SKIPPED_IN_APP=0
-      sleep 0.6
+      PROBE_TRIES=0
+      sleep 0.5
       continue
       ;;
   esac
+
+  # 读取跳过范围模式 (TARGETS_ONLY 仅目标清单 / ALL 全应用广谱)
+  SKIP_MODE="TARGETS_ONLY"
+  if [ -f "$APP_MODE_FILE" ]; then
+    read -r SKIP_MODE < "$APP_MODE_FILE" 2>/dev/null || SKIP_MODE="TARGETS_ONLY"
+  elif [ -f "$MODE_FILE" ]; then
+    read -r SKIP_MODE < "$MODE_FILE" 2>/dev/null || SKIP_MODE="TARGETS_ONLY"
+  fi
+
+  ACTIVE_TARGETS_FILE="$TARGETS_FILE"
+  if [ -f "$APP_TARGETS_FILE" ]; then
+    ACTIVE_TARGETS_FILE="$APP_TARGETS_FILE"
+  fi
+
+  # 若模式为 TARGETS_ONLY：仅对用户指定目标列表生效，其它所有应用 0 探针 0 误触 0 耗电
+  if [ "$SKIP_MODE" != "ALL" ]; then
+    if ! /bin/grep -q -F "$CUR_BUNDLE" "$ACTIVE_TARGETS_FILE" 2>/dev/null; then
+      LAST_BUNDLE="$CUR_BUNDLE"
+      IN_CLICK_STREAK=0
+      NO_BTN_TICKS=0
+      IN_APP_TICKS=0
+      SKIPPED_IN_APP=0
+      PROBE_TRIES=0
+      sleep 0.5
+      continue
+    fi
+  fi
 
   # 判定是否发生应用冷启动、切回前台 (Resume)、多任务唤回、息屏点亮进入应用：
   if [ "$WAS_IN_SYSTEM" -eq 1 ] || [ "$IS_RESUME_EVENT" -eq 1 ] || [ "$CUR_BUNDLE" != "$LAST_BUNDLE" ]; then
@@ -415,6 +539,58 @@ while true; do
     NO_BTN_TICKS=0
     IN_APP_TICKS=0
     SKIPPED_IN_APP=0
+    PROBE_TRIES=0
+
+    # 读取该应用独立配置的跳过策略 (AUTO默认自动 / PROBE坐标探针 / AUTO_PROBE自动+探针兜底 / DISABLED关闭)
+    CUSTOM_PROBE_RULE=$(get_probe_rule "$CUR_BUNDLE")
+    RULE_STRAT="AUTO"
+    RULE_DELAY_MS="0"
+    RULE_X=""
+    RULE_Y=""
+    RULE_MAX_TRIES=4
+
+    if [ -n "$CUSTOM_PROBE_RULE" ]; then
+      RULE_VALS="${CUSTOM_PROBE_RULE#*=}"
+      OLD_IFS="$IFS"
+      IFS=","
+      set -- $RULE_VALS
+      IFS="$OLD_IFS"
+      RULE_ARG1="$1"
+      RULE_DELAY_MS="${2:-0}"
+      RULE_X="$3"
+      RULE_Y="$4"
+      RULE_MAX_TRIES="${5:-4}"
+
+      case "$RULE_ARG1" in
+        DISABLED|0)
+          RULE_STRAT="DISABLED"
+          ;;
+        PROBE|1)
+          RULE_STRAT="PROBE"
+          ;;
+        AUTO_PROBE)
+          RULE_STRAT="AUTO_PROBE"
+          ;;
+        *)
+          RULE_STRAT="AUTO"
+          ;;
+      esac
+    fi
+
+    # 若应用被用户明确配置为 DISABLED，完全不作任何跳过处理，直接休眠巡检
+    if [ "$RULE_STRAT" = "DISABLED" ]; then
+      SKIPPED_IN_APP=1
+      sleep 0.5
+      continue
+    fi
+
+    # 若配置了初始缓冲延迟（仅在 PROBE / AUTO_PROBE 模式下生效），执行轻量等待
+    if [ "$RULE_STRAT" != "AUTO" ] && [ -n "$RULE_X" ] && [ -n "$RULE_Y" ]; then
+      DELAY_SEC=$(format_ms_to_sec "$RULE_DELAY_MS")
+      if [ "$DELAY_SEC" != "0" ]; then
+        sleep "$DELAY_SEC"
+      fi
+    fi
   else
     IN_APP_TICKS=$((IN_APP_TICKS + 1))
   fi
@@ -433,15 +609,92 @@ while true; do
   MAX_CAND_Y=$(( SCREEN_H * 15 / 100 ))
   MIN_CAND_Y=$(( SCREEN_H * 2 / 100 ))
 
-  # 4. 第一层：通用多模态文本、符号与主流广告 SDK 特征提取
-  # A 规则：跳过关键词、关闭符号、主流联盟 SDK 核心 ID (广点通/TAD/穿山甲/快手/百青藤/华为HiAd)
-  : > "$BOUNDS_TXT"
-  /bin/sed -E -n '/"visible":"true"/!d; /QuickBackText|AdSkip|adskip|跳过&VPN|控制台|跳过片头|跳过片尾|跳过前奏|跳过空白|跳过静音|无障碍|已自动跳过/d; /"(text|originalText|description|accessibilityText)":"[^"]{0,20}(跳[[:space:]]*过|跳过广告|点击跳过|关闭广告|[Ss][Kk][Ii][Pp]|关闭|不再提示|忽略)[^"]{0,20}"|"(id|key)":"[^"]*(skip|splash_skip|ad_skip|tv_skip|btn_skip|skip_view|tad_|splash_btn|gdt_|btn_close|iv_close|tt_splash|tt_ad_skip|ksad_|mobads_|hiad_)[^"]*"/s/.*"bounds":"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1:\2:\3:\4:STD/p' "$ATTRS_TXT" > "$BOUNDS_TXT" 2>/dev/null || true
+  # ==========================================================================
+  # 🎯 核心架构：多应用完全解耦独立策略分发 (Strategy Dispatch)
+  # 彻底解决不同应用混杂互相干扰问题！四大策略绝对独立：
+  # 1. DISABLED:   完全关闭（零触控、零误触，如山姆等）
+  # 2. PROBE:      纯自绘无文字专属坐标探针（专为腾讯视频等全 Canvas 设计）
+  # 3. AUTO:       标准特征优先自动跳过（QQ音乐、爱奇艺、优酷等 95% 标准应用）
+  # 4. AUTO_PROBE: 标准特征优先 + 专属坐标探针兜底
+  # ==========================================================================
 
-  # B 规则：右上角纯数字/倒计时跳过 (如 "5s", "4s", "5秒", "3")
-  /bin/sed -E -n '/"visible":"true"/!d; /"(text|originalText)":"[[:space:]]*[0-9]{1,2}[[:space:]]*(s|S|秒)?[[:space:]]*"/s/.*"bounds":"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1:\2:\3:\4:CD/p' "$ATTRS_TXT" >> "$BOUNDS_TXT" 2>/dev/null || true
+  # --------------------------------------------------------------------------
+  # 策略 1: DISABLED (完全禁用)
+  # --------------------------------------------------------------------------
+  if [ "$RULE_STRAT" = "DISABLED" ]; then
+    SKIPPED_IN_APP=1
+    IN_CLICK_STREAK=0
+    sleep 0.5
+    continue
+  fi
 
+  # --------------------------------------------------------------------------
+  # 策略 2: PROBE (腾讯视频等自绘应用专属，彻底绕过通用文本扫描与正则匹配)
+  # --------------------------------------------------------------------------
+  if [ "$RULE_STRAT" = "PROBE" ]; then
+    # 若该应用此前已标记跳过/闭锁，深度休眠巡检，绝不再碰屏幕
+    if [ "$SKIPPED_IN_APP" -eq 1 ]; then
+      IN_CLICK_STREAK=0
+      sleep 0.5
+      continue
+    fi
+
+    # 1. 专属主界面判断（腾讯视频自绘界面特征识别：主界面挂载 compose_root2）
+    IS_MAIN_PAGE=0
+    if /bin/grep -q '"id":"compose_root2"' "$ATTRS_TXT" 2>/dev/null; then
+      IS_MAIN_PAGE=1
+    elif /bin/grep -q -E '"(text|originalText)":"(精选|电视剧|电影|少儿|动漫|综艺|首页|推荐|关注|发现|我的|个人中心|VIP|会员|短剧|直播)"' "$ATTRS_TXT" 2>/dev/null; then
+      IS_MAIN_PAGE=1
+    fi
+
+    # 2. 若已达主界面：中止后续探针，记录成功跳过并立即强闭锁
+    if [ "$IS_MAIN_PAGE" -eq 1 ]; then
+      if [ "$PROBE_TRIES" -gt 0 ] && [ "$SKIPPED_IN_APP" -eq 0 ]; then
+        SKIP_COUNT=$((SKIP_COUNT + 1))
+        record_skip_event "$CUR_BUNDLE" "SUCCESS" "[主界面已就绪]" "🎉 成功跳过 (第${PROBE_TRIES}次探针命中，中止后续)"
+      fi
+      SKIPPED_IN_APP=1
+      IN_CLICK_STREAK=0
+      sleep 0.5
+      continue
+    fi
+
+    # 3. 仍在开屏期：发射指定坐标探针 (最多限制 RULE_MAX_TRIES 次)
+    if [ -n "$RULE_X" ] && [ -n "$RULE_Y" ]; then
+      if [ "$PROBE_TRIES" -lt "$RULE_MAX_TRIES" ]; then
+        PROBE_TRIES=$((PROBE_TRIES + 1))
+        /bin/uinput -T -d "$RULE_X" "$RULE_Y" -i 55 -u "$RULE_X" "$RULE_Y" >/dev/null 2>&1
+        record_skip_event "$CUR_BUNDLE" "${RULE_X},${RULE_Y}" "[用户自定义热区]" "⏱️ 自绘探针第${PROBE_TRIES}/${RULE_MAX_TRIES}次检测"
+        if [ "$PROBE_TRIES" -ge "$RULE_MAX_TRIES" ]; then
+          SKIPPED_IN_APP=1
+          SKIP_COUNT=$((SKIP_COUNT + 1))
+        fi
+        sleep 0.18
+        continue
+      else
+        SKIPPED_IN_APP=1
+        sleep 0.5
+        continue
+      fi
+    else
+      SKIPPED_IN_APP=1
+      sleep 0.5
+      continue
+    fi
+  fi
+
+  # --------------------------------------------------------------------------
+  # 策略 3 与 4: AUTO 与 AUTO_PROBE (标准多模态文本、符号与 SDK ID 优先扫描)
+  # --------------------------------------------------------------------------
   CLICKED=0
+
+  # A 规则：跳过关键词、关闭符号、主流联盟 SDK 核心 ID (广点通/TAD/穿山甲/快手/百青藤/华为HiAd/Text_skip)
+  : > "$BOUNDS_TXT"
+  /bin/sed -E -n '/"visible":"true"/!d; /QuickBackText|AdSkip|adskip|跳过&VPN|控制台|跳过片头|跳过片尾|跳过前奏|跳过空白|跳过静音|无障碍|已自动跳过/d; /"(text|originalText|description|accessibilityText)":"[^"]{0,20}(跳[[:space:]]*过|跳过广告|点击跳过|关闭广告|[Ss][Kk][Ii][Pp]|关闭|不再提示|忽略)[^"]{0,20}"|"(id|key)":"[^"]*(skip|splash_skip|ad_skip|tv_skip|btn_skip|skip_view|tad_|splash_btn|gdt_|btn_close|iv_close|tt_splash|tt_ad_skip|ksad_|mobads_|hiad_|Text_skip|text_skip)[^"]*"/s/.*"bounds":"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1:\2:\3:\4:STD/p' "$ATTRS_TXT" > "$BOUNDS_TXT" 2>/dev/null || true
+
+  # B 规则：右上角倒计时跳过 (必须严格包含 s/秒 等时间单位，严防误将未读红点、购物车角标纯数字当成倒计时)
+  /bin/sed -E -n '/"visible":"true"/!d; /"(text|originalText)":"[[:space:]]*([0-9]{1,2}[[:space:]]*(s|S|秒)|跳过[[:space:]]*[0-9]{1,2})[[:space:]]*"/s/.*"bounds":"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1:\2:\3:\4:CD/p' "$ATTRS_TXT" >> "$BOUNDS_TXT" 2>/dev/null || true
+
   if [ -s "$BOUNDS_TXT" ]; then
     while IFS=":" read -r x1 y1 x2 y2 tag; do
       if [ -n "$x1" ] && [ -n "$y2" ]; then
@@ -457,8 +710,8 @@ while true; do
         if [ "$w" -ge 20 ] && [ "$w" -le 850 ] && [ "$h" -ge 16 ] && [ "$h" -le 300 ] && [ "$x1" -ge 10 ] && [ "$y1" -ge 40 ] && [ "$y2" -le 2800 ]; then
           cx=$(( (x1 + x2) / 2 ))
           cy=$(( (y1 + y2) / 2 ))
-          /bin/uinput -T -d "$cx" "$cy" -i 55 -u "$cx" "$cy" >/dev/null 2>&1
           if [ "$IN_CLICK_STREAK" -eq 0 ]; then
+            /bin/uinput -T -d "$cx" "$cy" -i 55 -u "$cx" "$cy" >/dev/null 2>&1
             SKIP_COUNT=$((SKIP_COUNT + 1))
             IN_CLICK_STREAK=1
             SKIPPED_IN_APP=1
@@ -471,66 +724,68 @@ while true; do
     done < "$BOUNDS_TXT"
   fi
 
-  # --------------------------------------------------------------------------
-  # 第二层：通用开屏广告场景感知与右上角胶囊启发式兜底 (Heuristic Probe)
-  # 仅在刚进入应用的开屏/切回窗口期 (前 22 轮采样内) 且第一层未命中时生效
-  # --------------------------------------------------------------------------
-  if [ "$CLICKED" -eq 0 ] && [ "$IN_APP_TICKS" -le 22 ] && [ "$SKIPPED_IN_APP" -eq 0 ]; then
-    HAS_AD_SIGNAL=0
-    if /bin/grep -q -E '"(text|originalText|description|accessibilityText)":"[^"]*(广告|[Aa][Dd]|推广|商业推广|摇一摇|扭一扭|翻转|滑动浏览|进入第三方|第三方应用|查看详情|了解详情)[^"]*"' "$ATTRS_TXT" 2>/dev/null || \
-       /bin/grep -q -E '"(id|key)":"[^"]*(splash|ad_container|tad_|gdt_|tt_splash|ksad_|mobads_|hiad_)[^"]*"' "$ATTRS_TXT" 2>/dev/null; then
-      HAS_AD_SIGNAL=1
-    fi
+  # 若命中标准跳过控件，微延时后进入下一循环
+  if [ "$CLICKED" -eq 1 ]; then
+    NO_BTN_TICKS=0
+    IN_APP_TICKS=0
+    sleep 0.18
+    continue
+  fi
 
-    if [ "$HAS_AD_SIGNAL" -eq 1 ]; then
-      # A. 检索落在右上角跳过区域的顶层可见组件 (Image/Stack/Row 等无文本胶囊)
-      : > "$CAND_TXT"
-      /bin/sed -E -n '/"visible":"true"/!d; /QuickBackText|AdSkip|adskip|控制台/d; s/.*"bounds":"\[([0-9]+),([0-9]+)\]\[([0-9]+),([0-9]+)\]".*/\1:\2:\3:\4/p' "$ATTRS_TXT" > "$CAND_TXT" 2>/dev/null || true
-      
-      FOUND_CAND=0
-      while IFS=":" read -r cx1 cy1 cx2 cy2; do
-        if [ -n "$cx1" ] && [ -n "$cy2" ]; then
-          cw=$((cx2 - cx1))
-          ch=$((cy2 - cy1))
-          if [ "$cx1" -ge "$MIN_CAND_X" ] && [ "$cy1" -ge "$MIN_CAND_Y" ] && [ "$cy2" -le "$MAX_CAND_Y" ]; then
-            if [ "$cw" -ge 35 ] && [ "$cw" -le 320 ] && [ "$ch" -ge 20 ] && [ "$ch" -le 160 ]; then
-              tcx=$(( (cx1 + cx2) / 2 ))
-              tcy=$(( (cy1 + cy2) / 2 ))
-              /bin/uinput -T -d "$tcx" "$tcy" -i 55 -u "$tcx" "$tcy" >/dev/null 2>&1
-              if [ "$IN_CLICK_STREAK" -eq 0 ]; then
-                SKIP_COUNT=$((SKIP_COUNT + 1))
-                IN_CLICK_STREAK=1
-                SKIPPED_IN_APP=1
-                record_skip_event "$CUR_BUNDLE" "${tcx},${tcy}" "[${cx1},${cy1}][${cx2},${cy2}]" "⚡ 智能热区识别"
-              fi
-              CLICKED=1
-              FOUND_CAND=1
-              break
-            fi
-          fi
-        fi
-      done < "$CAND_TXT"
+  # 🛡️ 核心强闭锁：若此前已成功跳过/已闭锁，直接休眠巡检，绝不误触！
+  if [ "$SKIPPED_IN_APP" -eq 1 ]; then
+    IN_CLICK_STREAK=0
+    sleep 0.5
+    continue
+  fi
 
-      # B. 极端自绘场景兜底：纯 Canvas/XComponent 自绘且连节点都未暴露时，执行全机型通用右上角锚点探针
-      if [ "$FOUND_CAND" -eq 0 ] && [ "$IN_APP_TICKS" -le 10 ]; then
-        ANCHOR_X=$(( SCREEN_W * 90 / 100 ))
-        ANCHOR_Y=$(( SCREEN_H * 78 / 1000 ))
-        /bin/uinput -T -d "$ANCHOR_X" "$ANCHOR_Y" -i 55 -u "$ANCHOR_X" "$ANCHOR_Y" >/dev/null 2>&1
-        if [ "$IN_CLICK_STREAK" -eq 0 ]; then
-          SKIP_COUNT=$((SKIP_COUNT + 1))
-          IN_CLICK_STREAK=1
-          SKIPPED_IN_APP=1
-          record_skip_event "$CUR_BUNDLE" "${ANCHOR_X},${ANCHOR_Y}" "[探针锚点]" "🚀 全局通用锚点探针"
-        fi
-        CLICKED=1
+  # 通用主界面识别 (基于业务 Tab/核心导航词与高文本密度)
+  IS_MAIN_PAGE=0
+  TEXT_COUNT=$(/bin/grep -c -E '"(text|originalText)":"[^"]+"' "$ATTRS_TXT" 2>/dev/null)
+  TEXT_COUNT="${TEXT_COUNT:-0}"
+
+  if /bin/grep -q -E '"(text|originalText)":"(精选|电视剧|电影|少儿|动漫|综艺|首页|推荐|关注|发现|消息|我的|个人中心|会员|VIP|购物车|动态|短剧|直播|分类|订单|卡券|搜索历史|搜索发现)"' "$ATTRS_TXT" 2>/dev/null; then
+    IS_MAIN_PAGE=1
+  elif [ "$TEXT_COUNT" -ge 7 ]; then
+    IS_MAIN_PAGE=1
+  elif [ "$TEXT_COUNT" -ge 4 ] && /bin/grep -q -E '"type":"(TabBar|Tabs)"' "$ATTRS_TXT" 2>/dev/null; then
+    IS_MAIN_PAGE=1
+  fi
+
+  if [ "$IS_MAIN_PAGE" -eq 1 ]; then
+    SKIPPED_IN_APP=1
+    IN_CLICK_STREAK=0
+    sleep 0.5
+    continue
+  fi
+
+  # 若未命中标准跳过且未到主界面：
+  # 若策略为 AUTO_PROBE，执行探针兜底
+  if [ "$RULE_STRAT" = "AUTO_PROBE" ] && [ -n "$RULE_X" ] && [ -n "$RULE_Y" ]; then
+    if [ "$PROBE_TRIES" -lt "$RULE_MAX_TRIES" ]; then
+      PROBE_TRIES=$((PROBE_TRIES + 1))
+      /bin/uinput -T -d "$RULE_X" "$RULE_Y" -i 55 -u "$RULE_X" "$RULE_Y" >/dev/null 2>&1
+      record_skip_event "$CUR_BUNDLE" "${RULE_X},${RULE_Y}" "[用户自定义热区]" "⏱️ 自绘探针第${PROBE_TRIES}/${RULE_MAX_TRIES}次检测"
+      CLICKED=1
+      if [ "$PROBE_TRIES" -ge "$RULE_MAX_TRIES" ]; then
+        SKIPPED_IN_APP=1
+        SKIP_COUNT=$((SKIP_COUNT + 1))
       fi
+    else
+      SKIPPED_IN_APP=1
+    fi
+  else
+    # 纯 AUTO 模式：在开屏前 5 轮内若无任何跳过信号，超过 5 轮直接闭锁，绝不误触页面内容
+    if [ "$IN_APP_TICKS" -ge 5 ]; then
+      SKIPPED_IN_APP=1
     fi
   fi
 
   if [ "$CLICKED" -eq 1 ]; then
     NO_BTN_TICKS=0
     IN_APP_TICKS=0
-    sleep 0.12
+    # 微脉冲间隙：0.18s 快速重测下一轮，一旦广告消失进主页立即中止后续
+    sleep 0.18
     continue
   else
     NO_BTN_TICKS=$((NO_BTN_TICKS + 1))
@@ -540,11 +795,11 @@ while true; do
   fi
 
   # 5. 节奏调度：
-  # A. 开屏与切回前台（Resume）窗口期 (前 22 轮，约 3 秒内)：
+  # A. 开屏与切回前台（Resume）窗口期 (前 10 轮内未跳过且非主界面)：
   #    高频突发采样 (每 0.12s 采样一次)，确保冷热启动、后台切回、锁屏亮屏时的广告露头就秒；
-  # B. 应用稳态使用期 (已连续运行超过 22 轮无广告，或已完成跳过)：
-  #    低功耗巡检模式 (每 0.5s 采样一次)，保证不掉帧、低耗电，且仍能捕捉突发热切回与插屏广告。
-  if [ "$IN_APP_TICKS" -le 22 ] && [ "$SKIPPED_IN_APP" -eq 0 ]; then
+  # B. 应用稳态使用期 (已连续运行超过 10 轮，或已完成跳过，或已在主界面)：
+  #    低功耗巡检模式 (每 0.5s 采样一次)，保证不掉帧、低耗电，且仍能捕捉突发热切回。
+  if [ "$IN_APP_TICKS" -le 10 ] && [ "$SKIPPED_IN_APP" -eq 0 ] && [ "$IS_MAIN_PAGE" -eq 0 ]; then
     sleep 0.12
   else
     sleep 0.5

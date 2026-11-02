@@ -15,4 +15,9 @@ local.properties
 *.hsp
 *.log
 *.out
+*.jpeg
+*.jpg
+*.png
+.clang-tidy
+.clangd
 .DS_Store
