@@ -106,7 +106,7 @@ EOF
 # 3. AUTO_PROBE: 自动跳过+探针兜底，双重保障
 # 4. DISABLED: 完全关闭跳过(如山姆会员店等无开屏广告应用)
 # ============================================================================
-com.tencent.videohm=PROBE,200,1135,185,4
+com.tencent.videohm=PROBE,200,1135,185,1
 com.tencent.hm.qqmusic=AUTO,0,1135,185,4
 cn.samsclub.hm.app=DISABLED,0,0,0,0
 EOF
@@ -639,9 +639,19 @@ while true; do
       continue
     fi
 
-    # 1. 专属主界面判断（腾讯视频自绘界面特征识别：主界面挂载 compose_root2）
+    # 1. 专属主界面判断（腾讯视频等自绘界面特征识别）
+    # 特征标志：
+    # - 存在二级 compose 根节点 (compose_root2)
+    # - 存在内部业务 NavDestination 层次 (,0,0,1,1)
+    # - 节点总数 >= 32 (开屏期仅 27-28 个节点，主界面多达 44+ 个节点)
+    # - 存在典型频道/业务文字
     IS_MAIN_PAGE=0
+    PROBE_NODES_COUNT=$(/bin/toybox wc -l < "$ATTRS_TXT" 2>/dev/null || echo 0)
     if /bin/grep -q '"id":"compose_root2"' "$ATTRS_TXT" 2>/dev/null; then
+      IS_MAIN_PAGE=1
+    elif /bin/grep -q ',0,0,1,1' "$ATTRS_TXT" 2>/dev/null; then
+      IS_MAIN_PAGE=1
+    elif [ "$PROBE_NODES_COUNT" -ge 32 ]; then
       IS_MAIN_PAGE=1
     elif /bin/grep -q -E '"(text|originalText)":"(精选|电视剧|电影|少儿|动漫|综艺|首页|推荐|关注|发现|我的|个人中心|VIP|会员|短剧|直播)"' "$ATTRS_TXT" 2>/dev/null; then
       IS_MAIN_PAGE=1
@@ -665,11 +675,22 @@ while true; do
         PROBE_TRIES=$((PROBE_TRIES + 1))
         /bin/uinput -T -d "$RULE_X" "$RULE_Y" -i 55 -u "$RULE_X" "$RULE_Y" >/dev/null 2>&1
         record_skip_event "$CUR_BUNDLE" "${RULE_X},${RULE_Y}" "[用户自定义热区]" "⏱️ 自绘探针第${PROBE_TRIES}/${RULE_MAX_TRIES}次检测"
-        if [ "$PROBE_TRIES" -ge "$RULE_MAX_TRIES" ]; then
+
+        # 探针发射后，关键防误触保护：
+        # 开屏广告点击「跳过」后，应用需要 350-500ms 响应并关闭过渡到主界面。
+        # 1. 立即给与 0.4s 页面过渡缓冲期
+        sleep 0.4
+
+        # 2. 专属防误触保护：腾讯视频等自绘应用单次探针即生效，或者已达配置上限，立即强闭锁
+        if [ "$CUR_BUNDLE" = "com.tencent.videohm" ] || [ "$PROBE_TRIES" -ge "$RULE_MAX_TRIES" ]; then
+          record_skip_event "$CUR_BUNDLE" "SUCCESS" "[防主页误触闭锁]" "🎉 成功跳过 (探针脉冲发射完成，主动闭锁防误触)"
           SKIPPED_IN_APP=1
           SKIP_COUNT=$((SKIP_COUNT + 1))
+          sleep 0.5
+          continue
         fi
-        sleep 0.18
+
+        # 3. 若配置了多次尝试，回到主循环让下一轮 dumpLayout 严格核验主页标志 (compose_root2 / 节点>=32)
         continue
       else
         SKIPPED_IN_APP=1

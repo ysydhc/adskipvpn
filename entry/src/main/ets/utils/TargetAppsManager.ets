@@ -37,7 +37,7 @@ export const DEFAULT_TARGET_APPS: TargetAppItem[] = [
       delayMs: 200,
       coordX: 1135,
       coordY: 185,
-      repeatTimes: 4
+      repeatTimes: 1
     }
   },
   {
@@ -50,7 +50,7 @@ export const DEFAULT_TARGET_APPS: TargetAppItem[] = [
       delayMs: 0,
       coordX: 1135,
       coordY: 185,
-      repeatTimes: 4
+      repeatTimes: 1
     }
   },
   {
@@ -63,7 +63,7 @@ export const DEFAULT_TARGET_APPS: TargetAppItem[] = [
       delayMs: 0,
       coordX: 1135,
       coordY: 185,
-      repeatTimes: 4
+      repeatTimes: 1
     }
   },
   {

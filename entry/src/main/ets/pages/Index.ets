@@ -871,42 +871,50 @@ struct Index {
                 .fontColor('#182431')
 
               Row({ space: 4 }) {
-                Button('🎯 默认自动')
-                  .height(28)
-                  .fontSize(10)
-                  .backgroundColor(this.editStrategy === 'AUTO' ? '#00A870' : '#F1F3F5')
+                Button('🎯 自动')
+                  .height(30)
+                  .fontSize(11)
+                  .fontWeight(FontWeight.Medium)
+                  .backgroundColor(this.editStrategy === 'AUTO' ? '#00A870' : '#EAECEF')
                   .fontColor(this.editStrategy === 'AUTO' ? '#FFFFFF' : '#182431')
+                  .padding({ left: 4, right: 4 })
                   .layoutWeight(1)
                   .onClick(() => {
                     this.editStrategy = 'AUTO';
                   })
 
-                Button('⏱️ 坐标探针')
-                  .height(28)
-                  .fontSize(10)
-                  .backgroundColor(this.editStrategy === 'PROBE' ? '#0052D9' : '#F1F3F5')
+                Button('⏱️ 探针')
+                  .height(30)
+                  .fontSize(11)
+                  .fontWeight(FontWeight.Medium)
+                  .backgroundColor(this.editStrategy === 'PROBE' ? '#0052D9' : '#EAECEF')
                   .fontColor(this.editStrategy === 'PROBE' ? '#FFFFFF' : '#182431')
+                  .padding({ left: 4, right: 4 })
                   .layoutWeight(1)
                   .onClick(() => {
                     this.editStrategy = 'PROBE';
                   })
 
-                Button('⚡ 自动+兜底')
-                  .height(28)
-                  .fontSize(10)
-                  .backgroundColor(this.editStrategy === 'AUTO_PROBE' ? '#7A3E9D' : '#F1F3F5')
+                Button('⚡ 混合')
+                  .height(30)
+                  .fontSize(11)
+                  .fontWeight(FontWeight.Medium)
+                  .backgroundColor(this.editStrategy === 'AUTO_PROBE' ? '#7A3E9D' : '#EAECEF')
                   .fontColor(this.editStrategy === 'AUTO_PROBE' ? '#FFFFFF' : '#182431')
+                  .padding({ left: 4, right: 4 })
                   .layoutWeight(1)
                   .onClick(() => {
                     this.editStrategy = 'AUTO_PROBE';
                   })
 
-                Button('🚫 关闭')
-                  .height(28)
-                  .fontSize(10)
-                  .backgroundColor(this.editStrategy === 'DISABLED' ? '#E34D59' : '#F1F3F5')
+                Button('🚫 禁用')
+                  .height(30)
+                  .fontSize(11)
+                  .fontWeight(FontWeight.Medium)
+                  .backgroundColor(this.editStrategy === 'DISABLED' ? '#E34D59' : '#EAECEF')
                   .fontColor(this.editStrategy === 'DISABLED' ? '#FFFFFF' : '#182431')
-                  .layoutWeight(0.8)
+                  .padding({ left: 4, right: 4 })
+                  .layoutWeight(1)
                   .onClick(() => {
                     this.editStrategy = 'DISABLED';
                   })
@@ -917,12 +925,19 @@ struct Index {
                 Row({ space: 6 }) {
                   Text('初始延迟(ms):')
                     .fontSize(11)
+                    .fontWeight(FontWeight.Medium)
                     .fontColor('#182431')
-                    .width(85)
+                    .width(82)
                   TextInput({ text: this.editDelayMs })
                     .layoutWeight(1)
-                    .height(30)
-                    .fontSize(11)
+                    .height(32)
+                    .fontSize(12)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor('#182431')
+                    .backgroundColor('#FFFFFF')
+                    .border({ width: 1, color: '#CCD2D8' })
+                    .borderRadius(6)
+                    .padding({ left: 8, right: 8, top: 0, bottom: 0 })
                     .type(InputType.Number)
                     .onChange((val: string) => {
                       this.editDelayMs = val;
@@ -930,12 +945,19 @@ struct Index {
 
                   Text('重复检测次数:')
                     .fontSize(11)
+                    .fontWeight(FontWeight.Medium)
                     .fontColor('#182431')
-                    .width(80)
+                    .width(78)
                   TextInput({ text: this.editRepeatTimes })
-                    .width(50)
-                    .height(30)
-                    .fontSize(11)
+                    .width(52)
+                    .height(32)
+                    .fontSize(12)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor('#182431')
+                    .backgroundColor('#FFFFFF')
+                    .border({ width: 1, color: '#CCD2D8' })
+                    .borderRadius(6)
+                    .padding({ left: 8, right: 8, top: 0, bottom: 0 })
                     .type(InputType.Number)
                     .onChange((val: string) => {
                       this.editRepeatTimes = val;
@@ -946,12 +968,19 @@ struct Index {
                 Row({ space: 6 }) {
                   Text('点击 X 坐标:')
                     .fontSize(11)
+                    .fontWeight(FontWeight.Medium)
                     .fontColor('#182431')
-                    .width(85)
+                    .width(82)
                   TextInput({ text: this.editCoordX })
                     .layoutWeight(1)
-                    .height(30)
-                    .fontSize(11)
+                    .height(32)
+                    .fontSize(12)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor('#182431')
+                    .backgroundColor('#FFFFFF')
+                    .border({ width: 1, color: '#CCD2D8' })
+                    .borderRadius(6)
+                    .padding({ left: 8, right: 8, top: 0, bottom: 0 })
                     .type(InputType.Number)
                     .onChange((val: string) => {
                       this.editCoordX = val;
@@ -959,12 +988,19 @@ struct Index {
 
                   Text('Y 坐标:')
                     .fontSize(11)
+                    .fontWeight(FontWeight.Medium)
                     .fontColor('#182431')
-                    .width(45)
+                    .width(42)
                   TextInput({ text: this.editCoordY })
                     .layoutWeight(1)
-                    .height(30)
-                    .fontSize(11)
+                    .height(32)
+                    .fontSize(12)
+                    .fontWeight(FontWeight.Bold)
+                    .fontColor('#182431')
+                    .backgroundColor('#FFFFFF')
+                    .border({ width: 1, color: '#CCD2D8' })
+                    .borderRadius(6)
+                    .padding({ left: 8, right: 8, top: 0, bottom: 0 })
                     .type(InputType.Number)
                     .onChange((val: string) => {
                       this.editCoordY = val;
@@ -974,26 +1010,28 @@ struct Index {
               }
 
               Row({ space: 8 }) {
-                Button('推荐自绘(200ms/1135,185/4次)')
-                  .height(28)
-                  .fontSize(10)
-                  .backgroundColor('#F1F3F5')
+                Button('✨ 推荐自绘(200ms/1135,185)')
+                  .height(32)
+                  .fontSize(11)
+                  .backgroundColor('#EBF2FF')
                   .fontColor('#0052D9')
                   .layoutWeight(1)
+                  .padding({ left: 6, right: 6 })
                   .onClick(() => {
                     this.editStrategy = 'PROBE';
                     this.editDelayMs = '200';
                     this.editCoordX = '1135';
                     this.editCoordY = '185';
-                    this.editRepeatTimes = '4';
+                    this.editRepeatTimes = '1';
                   })
 
                 Button('💾 保存并应用')
-                  .height(28)
-                  .fontSize(11)
+                  .height(32)
+                  .fontSize(12)
+                  .fontWeight(FontWeight.Bold)
                   .backgroundColor('#0052D9')
                   .fontColor('#FFFFFF')
-                  .padding({ left: 12, right: 12 })
+                  .padding({ left: 16, right: 16 })
                   .onClick(() => {
                     this.saveCurrentProbeRule();
                   })
@@ -1003,7 +1041,7 @@ struct Index {
             .width('100%')
           }
           .width('100%')
-          .height(190)
+          .height(215)
           .scrollBar(BarState.Auto)
           .padding(10)
           .backgroundColor('#F0F4FF')
